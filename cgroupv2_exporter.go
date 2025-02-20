@@ -239,7 +239,6 @@ func main() {
 
 	if len(allCgroups) == 0 {
 		logger.Error("No cgroup directories found from any glob pattern")
-		os.Exit(1)
 	}
 
 	http.Handle(*metricsPath, newHandler(allCgroups, !*disableExporterMetrics, *maxRequests, logger))
