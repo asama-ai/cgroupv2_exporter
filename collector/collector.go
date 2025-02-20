@@ -3,6 +3,7 @@ package collector
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,9 +13,7 @@ import (
 	"time"
 
 	"github.com/alecthomas/kingpin/v2"
-	"github.com/flipkart-incubator/cgroupv2_exporter/parsers"
-	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
+	"github.com/asama-ai/cgroupv2_exporter/parsers"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -42,14 +41,14 @@ const (
 )
 
 var (
-	factories              = make(map[string]func(logger log.Logger, cgroups []string) (Collector, error))
+	factories              = make(map[string]func(logger *slog.Logger, cgroups []string) (Collector, error))
 	initiatedCollectorsMtx = sync.Mutex{}
 	initiatedCollectors    = make(map[string]Collector)
 	collectorState         = make(map[string]*bool)
 	forcedCollectors       = map[string]bool{} // collectors which have been explicitly enabled or disabled
 )
 
-func registerCollector(collector string, isDefaultEnabled bool, factory func(logger log.Logger, cgroups []string) (Collector, error)) {
+func registerCollector(collector string, isDefaultEnabled bool, factory func(logger *slog.Logger, cgroups []string) (Collector, error)) {
 	var helpDefaultState string
 	if isDefaultEnabled {
 		helpDefaultState = "enabled"
@@ -69,15 +68,17 @@ func registerCollector(collector string, isDefaultEnabled bool, factory func(log
 
 type Cgroup2Collector struct {
 	Collectors map[string]Collector
-	logger     log.Logger
+	logger     *slog.Logger
 }
 
 type Cgroupv2FileCollector struct {
-	gaugeVecs map[string]*prometheus.GaugeVec
-	parser    parsers.Parser
-	dirNames  []string
-	fileName  string
-	logger    log.Logger
+	gaugeVecs   map[string]*prometheus.GaugeVec
+	counterVecs map[string]*prometheus.CounterVec
+	parser      parsers.Parser
+	dirNames    []string
+	fileName    string
+	logger      *slog.Logger
+	isCounter   func(metricName string) bool
 }
 
 // DisableDefaultCollectors sets the collector state to false for all collectors which
@@ -102,7 +103,7 @@ func collectorFlagAction(collector string) func(ctx *kingpin.ParseContext) error
 	}
 }
 
-func NewCgroupv2Collector(cgroups []string, logger log.Logger, filters ...string) (*Cgroup2Collector, error) {
+func NewCgroupv2Collector(cgroups []string, logger *slog.Logger, filters ...string) (*Cgroup2Collector, error) {
 	f := make(map[string]bool)
 	for _, filter := range filters {
 		enabled, exist := collectorState[filter]
@@ -124,7 +125,7 @@ func NewCgroupv2Collector(cgroups []string, logger log.Logger, filters ...string
 		if collector, ok := initiatedCollectors[key]; ok {
 			collectors[key] = collector
 		} else {
-			collector, err := factories[key](log.With(logger, "collector", key), cgroups)
+			collector, err := factories[key](slog.With(logger, "collector", key), cgroups)
 			if err != nil {
 				return nil, err
 			}
@@ -171,7 +172,7 @@ func (cgc *Cgroup2Collector) Collect(ch chan<- prometheus.Metric) {
 	wg.Wait()
 }
 
-func execute(name string, c Collector, ch chan<- prometheus.Metric, logger log.Logger) {
+func execute(name string, c Collector, ch chan<- prometheus.Metric, logger *slog.Logger) {
 	begin := time.Now()
 	err := c.Update(ch)
 	duration := time.Since(begin)
@@ -179,13 +180,13 @@ func execute(name string, c Collector, ch chan<- prometheus.Metric, logger log.L
 
 	if err != nil {
 		if IsNoDataError(err) {
-			level.Debug(logger).Log("msg", "collector returned no data", "name", name, "duration_seconds", duration.Seconds(), "err", err)
+			logger.Debug("collector returned no data", "name", name, "duration_seconds", duration.Seconds(), "err", err)
 		} else {
-			level.Error(logger).Log("msg", "collector failed", "name", name, "duration_seconds", duration.Seconds(), "err", err)
+			logger.Error("collector failed", "name", name, "duration_seconds", duration.Seconds(), "err", err)
 		}
 		success = 0
 	} else {
-		level.Debug(logger).Log("msg", "collector succeeded", "name", name, "duration_seconds", duration.Seconds())
+		logger.Debug("collector succeeded", "name", name, "duration_seconds", duration.Seconds())
 		success = 1
 	}
 	ch <- prometheus.MustNewConstMetric(scrapeDurationDesc, prometheus.GaugeValue, duration.Seconds(), name)
@@ -195,40 +196,55 @@ func execute(name string, c Collector, ch chan<- prometheus.Metric, logger log.L
 func (cc Cgroupv2FileCollector) Update(ch chan<- prometheus.Metric) error {
 	// Use the parser to fetch metrics for the specified file in all cgroup directories
 	for _, dirName := range cc.dirNames {
-		//level.Info(cc.logger).Log("dir", dirName, "file", cc.fileName)
 		filePath := filepath.Join(dirName, cc.fileName)
 		file, err := os.Open(filePath)
 		if err != nil {
-			level.Error(cc.logger).Log("dir", dirName, "err", err)
+			cc.logger.Error("failed to open file", "dir", dirName, "err", err)
 			return err
 		}
 		defer file.Close()
 
 		metrics, err := cc.parser.Parse(file)
 		if err != nil {
-			level.Error(cc.logger).Log("dir", dirName, "err", err)
+			cc.logger.Error("failed to parse file", "dir", dirName, "err", err)
 			return err
 		}
-		//level.Info(cc.logger).Log("dir", dirName)
 
 		cgroupName := sanitizeP8sName(filepath.Base(dirName))
-		// Set the gauge value with the directory label
+		// Set the metric value with the directory label
 		for key, value := range metrics {
 			metricName := sanitizeP8sName(key)
-			if _, ok := cc.gaugeVecs[metricName]; !ok {
-				cc.gaugeVecs[metricName] = prometheus.NewGaugeVec(
-					prometheus.GaugeOpts{
-						Namespace: "cgroupv2",
-						Name:      metricName,
-						Help:      fmt.Sprintf("metric %s from file %s", metricName, cc.fileName),
-					},
-					[]string{"cgroup"}, // Adding cgroup directory as a label
-				)
+
+			if cc.isCounter(metricName) {
+				// Handle as Counter
+				if _, ok := cc.counterVecs[metricName]; !ok {
+					cc.counterVecs[metricName] = prometheus.NewCounterVec(
+						prometheus.CounterOpts{
+							Namespace: "cgroupv2",
+							Name:      metricName,
+							Help:      fmt.Sprintf("metric %s from file %s", metricName, cc.fileName),
+						},
+						[]string{"cgroup"},
+					)
+				}
+				cc.counterVecs[metricName].WithLabelValues(cgroupName).Add(value)
+				cc.counterVecs[metricName].Collect(ch)
+			} else {
+				// Handle as Gauge (existing code)
+				if _, ok := cc.gaugeVecs[metricName]; !ok {
+					cc.gaugeVecs[metricName] = prometheus.NewGaugeVec(
+						prometheus.GaugeOpts{
+							Namespace: "cgroupv2",
+							Name:      metricName,
+							Help:      fmt.Sprintf("metric %s from file %s", metricName, cc.fileName),
+						},
+						[]string{"cgroup"},
+					)
+				}
+				cc.gaugeVecs[metricName].WithLabelValues(cgroupName).Set(value)
+				cc.gaugeVecs[metricName].Collect(ch)
 			}
-			cc.gaugeVecs[metricName].WithLabelValues(cgroupName).Set(value)
-			// Collect the metric
-			cc.gaugeVecs[metricName].Collect(ch)
-			level.Debug(cc.logger).Log("msg", fmt.Sprintf("collected metric: %s value: %f cgroup: %s", metricName, value, cgroupName))
+			cc.logger.Debug("collected metric", "name", metricName, "value", value, "cgroup", cgroupName)
 		}
 	}
 	return nil
@@ -252,72 +268,11 @@ func init() {
 	registerCollector("memory.current", defaultEnabled, NewMemoryCurrentCollector)
 	registerCollector("memory.swap.current", defaultEnabled, NewMemorySwapCurrentCollector)
 	registerCollector("memory.high", defaultEnabled, NewMemoryHighCollector)
-
-	registerCollector("memory.stat", defaultDisabled, NewMemoryStatCollector)
-}
-
-func NewMemoryPressureCollector(logger log.Logger, cgroups []string) (Collector, error) {
-	file := "memory.pressure"
-	return &Cgroupv2FileCollector{
-		gaugeVecs: make(map[string]*prometheus.GaugeVec),
-		parser: &parsers.NestedKeyValueParser{
-			MetricPrefix: sanitizeP8sName(file),
-			Logger:       log.With(logger, "file", file),
-		},
-		dirNames: cgroups,
-		fileName: file,
-		logger:   log.With(logger, "file", file),
-	}, nil
-}
-func NewMemoryCurrentCollector(logger log.Logger, cgroups []string) (Collector, error) {
-	file := "memory.current"
-	return &Cgroupv2FileCollector{
-		gaugeVecs: make(map[string]*prometheus.GaugeVec),
-		parser: &parsers.SingleValueParser{
-			MetricPrefix: sanitizeP8sName(file),
-			Logger:       log.With(logger, "file", file),
-		},
-		dirNames: cgroups,
-		fileName: file,
-		logger:   log.With(logger, "file", file),
-	}, nil
-}
-func NewMemorySwapCurrentCollector(logger log.Logger, cgroups []string) (Collector, error) {
-	file := "memory.swap.current"
-	return &Cgroupv2FileCollector{
-		gaugeVecs: make(map[string]*prometheus.GaugeVec),
-		parser: &parsers.SingleValueParser{
-			MetricPrefix: sanitizeP8sName(file),
-			Logger:       log.With(logger, "file", file),
-		},
-		dirNames: cgroups,
-		fileName: file,
-		logger:   log.With(logger, "file", file),
-	}, nil
-}
-func NewMemoryHighCollector(logger log.Logger, cgroups []string) (Collector, error) {
-	file := "memory.high"
-	return &Cgroupv2FileCollector{
-		gaugeVecs: make(map[string]*prometheus.GaugeVec),
-		parser: &parsers.SingleValueParser{
-			MetricPrefix: sanitizeP8sName(file),
-			Logger:       log.With(logger, "file", file),
-		},
-		dirNames: cgroups,
-		fileName: file,
-		logger:   log.With(logger, "file", file),
-	}, nil
-}
-func NewMemoryStatCollector(logger log.Logger, cgroups []string) (Collector, error) {
-	file := "memory.stat"
-	return &Cgroupv2FileCollector{
-		gaugeVecs: make(map[string]*prometheus.GaugeVec),
-		parser: &parsers.FlatKeyValueParser{
-			MetricPrefix: sanitizeP8sName(file),
-			Logger:       log.With(logger, "file", file),
-		},
-		dirNames: cgroups,
-		fileName: file,
-		logger:   log.With(logger, "file", file),
-	}, nil
+	registerCollector("memory.stat", defaultEnabled, NewMemoryStatCollector)
+	registerCollector("cpu.stat", defaultEnabled, NewCpuStatCollector)
+	registerCollector("cpu.pressure", defaultEnabled, NewCpuPressureCollector)
+	registerCollector("io.pressure", defaultEnabled, NewIoPressureCollector)
+	registerCollector("io.stat", defaultEnabled, NewIoStatCollector)
+	registerCollector("pids.current", defaultEnabled, NewPidsCurrentCollector)
+	registerCollector("pids.peak", defaultEnabled, NewPidsPeakCollector)
 }

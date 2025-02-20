@@ -19,6 +19,7 @@ package main
 import (
 	"fmt"
 	stdlog "log"
+	"log/slog"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -27,20 +28,28 @@ import (
 	"runtime"
 	"sort"
 
-	"github.com/prometheus/common/promlog"
-	"github.com/prometheus/common/promlog/flag"
+	"github.com/prometheus/common/promslog"
+	"github.com/prometheus/common/promslog/flag"
+	"github.com/prometheus/common/version"
 
 	"github.com/alecthomas/kingpin/v2"
-	"github.com/flipkart-incubator/cgroupv2_exporter/collector"
-	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
+	"github.com/asama-ai/cgroupv2_exporter/collector"
 	"github.com/prometheus/client_golang/prometheus"
 	promcollectors "github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/prometheus/common/version"
 	"github.com/prometheus/exporter-toolkit/web"
 	"github.com/prometheus/exporter-toolkit/web/kingpinflag"
 )
+
+// slogWriter adapts slog.Logger to io.Writer for promhttp
+type slogWriter struct {
+	logger *slog.Logger
+}
+
+func (w *slogWriter) Write(p []byte) (n int, err error) {
+	w.logger.Error(string(p))
+	return len(p), nil
+}
 
 // handler wraps an unfiltered http.Handler but uses a filtered handler,
 // created on the fly, if filtering is requested. Create instances with
@@ -52,11 +61,11 @@ type handler struct {
 	exporterMetricsRegistry *prometheus.Registry
 	includeExporterMetrics  bool
 	maxRequests             int
-	logger                  log.Logger
+	logger                  *slog.Logger
 	cgroups                 []string
 }
 
-func newHandler(cgroups []string, includeExporterMetrics bool, maxRequests int, logger log.Logger) *handler {
+func newHandler(cgroups []string, includeExporterMetrics bool, maxRequests int, logger *slog.Logger) *handler {
 	h := &handler{
 		exporterMetricsRegistry: prometheus.NewRegistry(),
 		includeExporterMetrics:  includeExporterMetrics,
@@ -81,7 +90,7 @@ func newHandler(cgroups []string, includeExporterMetrics bool, maxRequests int, 
 // ServeHTTP implements http.Handler.
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	filters := r.URL.Query()["collect[]"]
-	level.Debug(h.logger).Log("msg", "collect query:", "filters", filters)
+	h.logger.Debug("collect query", slog.Any("filters", filters))
 
 	if len(filters) == 0 {
 		// No filters, use the prepared unfiltered handler.
@@ -91,7 +100,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// To serve filtered metrics, we create a filtering handler on the fly.
 	filteredHandler, err := h.innerHandler(h.cgroups, filters...)
 	if err != nil {
-		level.Warn(h.logger).Log("msg", "Couldn't create filtered metrics handler:", "err", err)
+		h.logger.Warn("Couldn't create filtered metrics handler", "err", err)
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte(fmt.Sprintf("Couldn't create filtered metrics handler: %s", err)))
 		return
@@ -113,26 +122,37 @@ func (h *handler) innerHandler(cgroups []string, filters ...string) (http.Handle
 	// Only log the creation of an unfiltered handler, which should happen
 	// only once upon startup.
 	if len(filters) == 0 {
-		level.Info(h.logger).Log("msg", "Enabled collectors")
+		h.logger.Info("enabled collectors")
 		collectors := []string{}
 		for n := range cgc.Collectors {
 			collectors = append(collectors, n)
 		}
 		sort.Strings(collectors)
 		for _, c := range collectors {
-			level.Info(h.logger).Log("collector", c)
+			h.logger.Info("collector enabled", "name", c)
 		}
 	}
 
 	r := prometheus.NewRegistry()
-	r.MustRegister(version.NewCollector("cgroupv2_exporter"))
+
+	// Create version collector
+	versionCollector := prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "cgroupv2_exporter_build_info",
+			Help: "A metric with a constant '1' value labeled by version, revision, branch, and goversion from which cgroupv2_exporter was built.",
+		},
+		[]string{"version", "revision", "branch", "goversion"},
+	)
+	versionCollector.WithLabelValues(version.Version, version.Revision, version.Branch, version.GoVersion).Set(1)
+	r.MustRegister(versionCollector)
+
 	if err := r.Register(cgc); err != nil {
 		return nil, fmt.Errorf("couldn't register cgroupv2 collector: %s", err)
 	}
 	handler := promhttp.HandlerFor(
 		prometheus.Gatherers{h.exporterMetricsRegistry, r},
 		promhttp.HandlerOpts{
-			ErrorLog:            stdlog.New(log.NewStdlibAdapter(level.Error(h.logger)), "", 0),
+			ErrorLog:            stdlog.New(&slogWriter{logger: h.logger}, "", 0),
 			ErrorHandling:       promhttp.ContinueOnError,
 			MaxRequestsInFlight: h.maxRequests,
 			Registry:            h.exporterMetricsRegistry,
@@ -150,10 +170,10 @@ func (h *handler) innerHandler(cgroups []string, filters ...string) (http.Handle
 
 func main() {
 	var (
-		cgroupGlob = kingpin.Flag(
+		cgroupGlobs = kingpin.Flag(
 			"cgroup.glob",
-			"glob of cgroup directories to scrape",
-		).Default("/sys/fs/cgroup/*").String()
+			"glob of cgroup directories to scrape (can be specified multiple times)",
+		).Default("/sys/fs/cgroup/*").Strings()
 		metricsPath = kingpin.Flag(
 			"web.telemetry-path",
 			"Path under which to expose metrics.",
@@ -176,33 +196,53 @@ func main() {
 		toolkitFlags = kingpinflag.AddFlags(kingpin.CommandLine, ":9100")
 	)
 
-	promlogConfig := &promlog.Config{}
-	flag.AddFlags(kingpin.CommandLine, promlogConfig)
+	promslogConfig := &promslog.Config{}
+	flag.AddFlags(kingpin.CommandLine, promslogConfig)
 	kingpin.Version(version.Print("cgroupv2_exporter"))
 	kingpin.CommandLine.UsageWriter(os.Stdout)
 	kingpin.HelpFlag.Short('h')
 	kingpin.Parse()
-	logger := promlog.New(promlogConfig)
+
+	logger := promslog.New(promslogConfig)
 
 	if *disableDefaultCollectors {
 		collector.DisableDefaultCollectors()
 	}
-	level.Info(logger).Log("msg", "Starting cgroupv2_exporter", "version", version.Info())
-	level.Info(logger).Log("msg", "Build context", "build_context", version.BuildContext())
+	logger.Info("starting cgroupv2_exporter", "version", version.Info())
+	logger.Info("build context", "context", version.BuildContext())
 	if user, err := user.Current(); err == nil && user.Uid == "0" {
-		level.Warn(logger).Log("msg", "CgroupV2 Exporter is running as root user. This exporter is designed to run as unprivileged user, root is not required.")
+		logger.Warn("CgroupV2 Exporter is running as root user. This exporter is designed to run as unprivileged user, root is not required.")
 	}
 	runtime.GOMAXPROCS(*maxProcs)
-	level.Debug(logger).Log("msg", "Go MAXPROCS", "procs", runtime.GOMAXPROCS(0))
+	logger.Debug("Go MAXPROCS", "procs", runtime.GOMAXPROCS(0))
 
-	// Expand the glob pattern to get a list of directories
-	cgroups, err := filepath.Glob(*cgroupGlob)
-	if err != nil {
-		level.Error(logger).Log("err", err)
+	// Expand all glob patterns to get list of directories
+	var allCgroups []string
+	for _, globPattern := range *cgroupGlobs {
+		matches, err := filepath.Glob(globPattern)
+		if err != nil {
+			logger.Error("Failed to expand glob pattern", "pattern", globPattern, "err", err)
+			continue
+		}
+		// Only append directories
+		for _, match := range matches {
+			fi, err := os.Stat(match)
+			if err != nil {
+				logger.Error("Failed to stat path", "path", match, "err", err)
+				continue
+			}
+			if fi.IsDir() {
+				allCgroups = append(allCgroups, match)
+			}
+		}
+	}
+
+	if len(allCgroups) == 0 {
+		logger.Error("No cgroup directories found from any glob pattern")
 		os.Exit(1)
 	}
 
-	http.Handle(*metricsPath, newHandler(cgroups, !*disableExporterMetrics, *maxRequests, logger))
+	http.Handle(*metricsPath, newHandler(allCgroups, !*disableExporterMetrics, *maxRequests, logger))
 	if *metricsPath != "/" {
 		landingConfig := web.LandingConfig{
 			Name:        "CgroupV2 Exporter",
@@ -217,7 +257,7 @@ func main() {
 		}
 		landingPage, err := web.NewLandingPage(landingConfig)
 		if err != nil {
-			level.Error(logger).Log("err", err)
+			logger.Error("Error creating landing page", "err", err)
 			os.Exit(1)
 		}
 		http.Handle("/", landingPage)
@@ -225,7 +265,7 @@ func main() {
 
 	server := &http.Server{}
 	if err := web.ListenAndServe(server, toolkitFlags, logger); err != nil {
-		level.Error(logger).Log("err", err)
+		logger.Error("Server error", "err", err)
 		os.Exit(1)
 	}
 }
