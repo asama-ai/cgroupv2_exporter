@@ -4,12 +4,10 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"strconv"
 	"strings"
-
-	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
 )
 
 // Parser defines the interface for file parsers.
@@ -19,17 +17,17 @@ type Parser interface {
 
 type SingleValueParser struct {
 	MetricPrefix string
-	Logger       log.Logger
+	Logger       *slog.Logger
 }
 
 type FlatKeyValueParser struct {
 	MetricPrefix string
-	Logger       log.Logger
+	Logger       *slog.Logger
 }
 
 type NestedKeyValueParser struct {
 	MetricPrefix string
-	Logger       log.Logger
+	Logger       *slog.Logger
 }
 
 func readContent(file io.Reader) (string, error) {
@@ -46,18 +44,18 @@ func readContent(file io.Reader) (string, error) {
 func (p *SingleValueParser) Parse(file io.Reader) (map[string]float64, error) {
 	content, err := readContent(file)
 	if err != nil {
-		level.Error(p.Logger).Log("msg", "Error reading file", "err", err)
+		p.Logger.Error("error reading file", "err", err)
 		return nil, err
 	}
 	// Check if content is "max" and convert it to +Inf
 	if content == "max" {
-		level.Debug(p.Logger).Log("msg", "Converting max to +Inf")
+		p.Logger.Debug("converting max to +Inf")
 		return map[string]float64{p.MetricPrefix: math.Inf(1)}, nil
 	}
 
 	value, err := strconv.ParseFloat(content, 64)
 	if err != nil {
-		level.Error(p.Logger).Log("err", err)
+		p.Logger.Error("failed to parse value", "err", err)
 		return nil, err
 	}
 	return map[string]float64{p.MetricPrefix: value}, nil
@@ -72,7 +70,7 @@ func (p *FlatKeyValueParser) Parse(file io.Reader) (map[string]float64, error) {
 		line := scanner.Text()
 		parts := strings.Fields(line)
 		if len(parts) != 2 {
-			level.Error(p.Logger).Log("err", fmt.Errorf("expected %d fields in KeyValue. Got %d", 2, len(parts)))
+			p.Logger.Error("invalid field count", "expected", 2, "got", len(parts))
 			continue
 		}
 		metricName := fmt.Sprintf("%s_%s", p.MetricPrefix, parts[0])
@@ -80,7 +78,7 @@ func (p *FlatKeyValueParser) Parse(file io.Reader) (map[string]float64, error) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		level.Error(p.Logger).Log("err", err)
+		p.Logger.Error("scanner error", "err", err)
 		return nil, err
 	}
 
@@ -96,14 +94,14 @@ func (p *NestedKeyValueParser) Parse(file io.Reader) (map[string]float64, error)
 		line := scanner.Text()
 		parts := strings.Fields(line)
 		if len(parts) < 2 {
-			level.Error(p.Logger).Log("err", fmt.Errorf("expected %d fields in KeyValue. Got %d", 2, len(parts)))
+			p.Logger.Error("invalid field count", "expected_min", 2, "got", len(parts))
 			continue
 		}
 		prefix := parts[0]
 		for _, m := range parts[1:] {
 			metric := strings.Split(m, "=")
 			if len(metric) != 2 {
-				level.Error(p.Logger).Log("err", fmt.Errorf("failed to parse %s as Key=Value", m))
+				p.Logger.Error("failed to parse key-value pair", "input", m)
 				continue
 			}
 			metricName := fmt.Sprintf("%s_%s_%s", p.MetricPrefix, prefix, metric[0])
@@ -112,7 +110,7 @@ func (p *NestedKeyValueParser) Parse(file io.Reader) (map[string]float64, error)
 	}
 
 	if err := scanner.Err(); err != nil {
-		level.Error(p.Logger).Log("err", err)
+		p.Logger.Error("scanner error", "err", err)
 		return nil, err
 	}
 

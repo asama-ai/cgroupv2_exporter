@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/prometheus/common/promlog"
+	"github.com/prometheus/common/promslog"
 )
 
-var logger = promlog.New(&promlog.Config{})
+var logger = promslog.New(&promslog.Config{})
 
 func TestMultiKeyValueParser(t *testing.T) {
 	fileContent := `some avg10=1.23 avg60=4.56 avg300=7.89 total=1234
