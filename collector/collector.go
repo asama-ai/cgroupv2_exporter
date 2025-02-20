@@ -228,9 +228,8 @@ func (cc Cgroupv2FileCollector) Update(ch chan<- prometheus.Metric) error {
 					)
 				}
 				cc.counterVecs[metricName].WithLabelValues(cgroupName).Add(value)
-				cc.counterVecs[metricName].Collect(ch)
 			} else {
-				// Handle as Gauge (existing code)
+				// Handle as Gauge
 				if _, ok := cc.gaugeVecs[metricName]; !ok {
 					cc.gaugeVecs[metricName] = prometheus.NewGaugeVec(
 						prometheus.GaugeOpts{
@@ -242,11 +241,19 @@ func (cc Cgroupv2FileCollector) Update(ch chan<- prometheus.Metric) error {
 					)
 				}
 				cc.gaugeVecs[metricName].WithLabelValues(cgroupName).Set(value)
-				cc.gaugeVecs[metricName].Collect(ch)
 			}
 			cc.logger.Debug("collected metric", "name", metricName, "value", value, "cgroup", cgroupName)
 		}
 	}
+
+	// Collect all metrics at once after setting their values
+	for _, vec := range cc.gaugeVecs {
+		vec.Collect(ch)
+	}
+	for _, vec := range cc.counterVecs {
+		vec.Collect(ch)
+	}
+
 	return nil
 }
 
