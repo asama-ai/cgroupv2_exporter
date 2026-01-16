@@ -151,3 +151,83 @@ func TestKeyValueParser(t *testing.T) {
 		}
 	}
 }
+func TestRangeListCountParser(t *testing.T) {
+	tests := []struct {
+		name            string
+		fileContent     string
+		metricPrefix    string
+		expectedMetrics map[string]float64
+	}{
+		{
+			name:         "range and single values",
+			fileContent:  "0-3,8,10-11",
+			metricPrefix: "cpuset_cpus",
+			expectedMetrics: map[string]float64{
+				"cpuset_cpus_cpu_0":  1,
+				"cpuset_cpus_cpu_1":  1,
+				"cpuset_cpus_cpu_2":  1,
+				"cpuset_cpus_cpu_3":  1,
+				"cpuset_cpus_cpu_8":  1,
+				"cpuset_cpus_cpu_10": 1,
+				"cpuset_cpus_cpu_11": 1,
+			},
+		},
+		{
+			name:         "single range",
+			fileContent:  "4-8",
+			metricPrefix: "cpuset_cpus",
+			expectedMetrics: map[string]float64{
+				"cpuset_cpus_cpu_4": 1,
+				"cpuset_cpus_cpu_5": 1,
+				"cpuset_cpus_cpu_6": 1,
+				"cpuset_cpus_cpu_7": 1,
+				"cpuset_cpus_cpu_8": 1,
+			},
+		},
+		{
+			name:         "single value",
+			fileContent:  "5",
+			metricPrefix: "cpuset_cpus",
+			expectedMetrics: map[string]float64{
+				"cpuset_cpus_cpu_5": 1,
+			},
+		},
+		{
+			name:            "empty file",
+			fileContent:     "",
+			metricPrefix:    "cpuset_cpus",
+			expectedMetrics: map[string]float64{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			file := strings.NewReader(tt.fileContent)
+			parser := &RangeListCountParser{
+				MetricPrefix: tt.metricPrefix,
+				Logger:       logger,
+			}
+
+			metrics, err := parser.Parse(file)
+			if err != nil {
+				t.Fatalf("Error parsing: %v", err)
+			}
+
+			if len(metrics) != len(tt.expectedMetrics) {
+				t.Errorf("Expected %d metrics, got %d", len(tt.expectedMetrics), len(metrics))
+			}
+
+			for metricName, expectedValue := range tt.expectedMetrics {
+				actualValue, ok := metrics[metricName]
+				if !ok {
+					t.Errorf("Metric %s not found in actual metrics", metricName)
+					continue
+				}
+
+				if actualValue != expectedValue {
+					t.Errorf("Metric %s has unexpected value. Expected: %f, Actual: %f", metricName, expectedValue, actualValue)
+				}
+			}
+		})
+	}
+}
