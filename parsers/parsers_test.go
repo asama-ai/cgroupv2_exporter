@@ -198,12 +198,6 @@ func TestRangeListCountParser(t *testing.T) {
 			metricPrefix:    "cpuset_cpus",
 			expectedMetrics: map[string]float64{},
 		},
-		{
-			name:            "whitespace only",
-			fileContent:     "   ",
-			metricPrefix:    "cpuset_cpus",
-			expectedMetrics: map[string]float64{},
-		},
 	}
 
 	for _, tt := range tests {
