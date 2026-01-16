@@ -46,3 +46,75 @@ func NewCpuPressureCollector(logger *slog.Logger, cgroups []string) (Collector, 
 		},
 	}, nil
 }
+
+func NewCPUSetCpusCollector(logger *slog.Logger, cgroups []string) (Collector, error) {
+	file := "cpuset.cpus"
+	fileLogger := slog.With(logger, "file", file)
+
+	return &Cgroupv2FileCollector{
+		gaugeVecs:   make(map[string]*prometheus.GaugeVec),
+		counterVecs: make(map[string]*prometheus.CounterVec),
+		parser: &parsers.RangeListCountParser{
+			MetricPrefix: sanitizeP8sName(file),
+			Logger:       fileLogger,
+		},
+		dirNames:  cgroups,
+		fileName:  file,
+		logger:    fileLogger,
+		isCounter: func(metricName string) bool { return false },
+	}, nil
+}
+
+func NewCPUSetCpusEffectiveCollector(logger *slog.Logger, cgroups []string) (Collector, error) {
+	file := "cpuset.cpus.effective"
+	fileLogger := slog.With(logger, "file", file)
+
+	return &Cgroupv2FileCollector{
+		gaugeVecs:   make(map[string]*prometheus.GaugeVec),
+		counterVecs: make(map[string]*prometheus.CounterVec),
+		parser: &parsers.RangeListCountParser{
+			MetricPrefix: sanitizeP8sName(file),
+			Logger:       fileLogger,
+		},
+		dirNames:  cgroups,
+		fileName:  file,
+		logger:    fileLogger,
+		isCounter: func(metricName string) bool { return false },
+	}, nil
+}
+
+func NewCPUSetMemsCollector(logger *slog.Logger, cgroups []string) (Collector, error) {
+	file := "cpuset.mems"
+	fileLogger := slog.With(logger, "file", file)
+
+	return &Cgroupv2FileCollector{
+		gaugeVecs:   make(map[string]*prometheus.GaugeVec),
+		counterVecs: make(map[string]*prometheus.CounterVec),
+		parser: &parsers.RangeListCountParser{
+			MetricPrefix: sanitizeP8sName(file),
+			Logger:       fileLogger,
+		},
+		dirNames:  cgroups,
+		fileName:  file,
+		logger:    fileLogger,
+		isCounter: func(metricName string) bool { return false },
+	}, nil
+}
+
+func NewCPUSetMemsEffectiveCollector(logger *slog.Logger, cgroups []string) (Collector, error) {
+	file := "cpuset.mems.effective"
+	fileLogger := slog.With(logger, "file", file)
+
+	return &Cgroupv2FileCollector{
+		gaugeVecs:   make(map[string]*prometheus.GaugeVec),
+		counterVecs: make(map[string]*prometheus.CounterVec),
+		parser: &parsers.RangeListCountParser{
+			MetricPrefix: sanitizeP8sName(file),
+			Logger:       fileLogger,
+		},
+		dirNames:  cgroups,
+		fileName:  file,
+		logger:    fileLogger,
+		isCounter: func(metricName string) bool { return false },
+	}, nil
+}
