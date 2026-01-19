@@ -199,15 +199,22 @@ func (cc Cgroupv2FileCollector) Update(ch chan<- prometheus.Metric) error {
 		filePath := filepath.Join(dirName, cc.fileName)
 		file, err := os.Open(filePath)
 		if err != nil {
+			// Silently skip if file doesn't exist (some cgroups don't have all files)
+			if os.IsNotExist(err) {
+				cc.logger.Debug("file not found, skipping", "file", cc.fileName, "dir", dirName)
+				continue
+			}
+			// Log other errors but continue processing other directories
 			cc.logger.Error("failed to open file", "dir", dirName, "err", err)
-			return err
+			continue
 		}
 		defer file.Close()
 
 		metrics, err := cc.parser.Parse(file)
 		if err != nil {
+			// Log parsing errors but continue processing other directories
 			cc.logger.Error("failed to parse file", "dir", dirName, "err", err)
-			return err
+			continue
 		}
 
 		cgroupName := sanitizeP8sName(filepath.Base(dirName))
