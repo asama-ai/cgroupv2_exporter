@@ -154,9 +154,10 @@ func (p *RangeListCountParser) Parse(file io.Reader) (map[string]float64, error)
 				}
 
 				for i := start; i <= end; i++ {
-					metricName := p.MetricPrefix // e.g., "cpuset_cpu_enabled"
-					// Key includes CPU as pseudo-label
-					metrics[metricName+"_cpu_"+strconv.Itoa(i)] = 1
+					// Use base metric name with label value as separator for collector to parse
+					// Format: "base_metric_name|label_value" (label name will be detected in collector)
+					metricName := p.MetricPrefix + "|" + strconv.Itoa(i)
+					metrics[metricName] = 1
 				}
 
 			} else {
@@ -165,8 +166,10 @@ func (p *RangeListCountParser) Parse(file io.Reader) (map[string]float64, error)
 					p.Logger.Error("invalid value", "input", r, "err", err)
 					continue
 				}
-				metricName := p.MetricPrefix
-				metrics[metricName+"_cpu_"+strconv.Itoa(val)] = 1
+				// Use base metric name with label value as separator for collector to parse
+				// Format: "base_metric_name|label_value" (label name will be detected in collector)
+				metricName := p.MetricPrefix + "|" + strconv.Itoa(val)
+				metrics[metricName] = 1
 			}
 		}
 	}
