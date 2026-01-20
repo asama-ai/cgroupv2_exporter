@@ -2,7 +2,6 @@ package collector
 
 import (
 	"log/slog"
-	"strings"
 
 	"github.com/asama-ai/cgroupv2_exporter/parsers"
 	"github.com/prometheus/client_golang/prometheus"
@@ -22,7 +21,7 @@ func NewCpuStatCollector(logger *slog.Logger, cgroups []string) (Collector, erro
 		dirNames:  cgroups,
 		fileName:  file,
 		logger:    fileLogger,
-		isCounter: func(metricName string) bool { return true },
+		isCounter: func(metricName string, labels map[string]string) bool { return true },
 	}, nil
 }
 
@@ -40,9 +39,12 @@ func NewCpuPressureCollector(logger *slog.Logger, cgroups []string) (Collector, 
 		dirNames: cgroups,
 		fileName: file,
 		logger:   fileLogger,
-		isCounter: func(metricName string) bool {
+		isCounter: func(metricName string, labels map[string]string) bool {
 			// total values are counters, avg values are gauges
-			return strings.HasSuffix(metricName, "total")
+			if typeLabel, ok := labels["type"]; ok {
+				return typeLabel == "total"
+			}
+			return false
 		},
 	}, nil
 }
@@ -61,7 +63,7 @@ func NewCPUSetCpusCollector(logger *slog.Logger, cgroups []string) (Collector, e
 		dirNames:  cgroups,
 		fileName:  file,
 		logger:    fileLogger,
-		isCounter: func(metricName string) bool { return false },
+		isCounter: func(metricName string, labels map[string]string) bool { return false },
 	}, nil
 }
 
@@ -79,7 +81,7 @@ func NewCPUSetCpusEffectiveCollector(logger *slog.Logger, cgroups []string) (Col
 		dirNames:  cgroups,
 		fileName:  file,
 		logger:    fileLogger,
-		isCounter: func(metricName string) bool { return false },
+		isCounter: func(metricName string, labels map[string]string) bool { return false },
 	}, nil
 }
 
@@ -97,7 +99,7 @@ func NewCPUSetMemsCollector(logger *slog.Logger, cgroups []string) (Collector, e
 		dirNames:  cgroups,
 		fileName:  file,
 		logger:    fileLogger,
-		isCounter: func(metricName string) bool { return false },
+		isCounter: func(metricName string, labels map[string]string) bool { return false },
 	}, nil
 }
 
@@ -115,6 +117,6 @@ func NewCPUSetMemsEffectiveCollector(logger *slog.Logger, cgroups []string) (Col
 		dirNames:  cgroups,
 		fileName:  file,
 		logger:    fileLogger,
-		isCounter: func(metricName string) bool { return false },
+		isCounter: func(metricName string, labels map[string]string) bool { return false },
 	}, nil
 }

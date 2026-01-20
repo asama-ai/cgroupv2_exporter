@@ -78,7 +78,7 @@ type Cgroupv2FileCollector struct {
 	dirNames    []string
 	fileName    string
 	logger      *slog.Logger
-	isCounter   func(metricName string) bool
+	isCounter   func(metricName string, labels map[string]string) bool
 }
 
 // DisableDefaultCollectors sets the collector state to false for all collectors which
@@ -193,6 +193,13 @@ func execute(name string, c Collector, ch chan<- prometheus.Metric, logger *slog
 	ch <- prometheus.MustNewConstMetric(scrapeSuccessDesc, prometheus.GaugeValue, success, name)
 }
 
+// type metric struct{
+// 	name string
+// 	value float64
+// 	labels []
+
+// }
+
 func (cc Cgroupv2FileCollector) Update(ch chan<- prometheus.Metric) error {
 	// Use the parser to fetch metrics for the specified file in all cgroup directories
 	for _, dirName := range cc.dirNames {
@@ -217,55 +224,20 @@ func (cc Cgroupv2FileCollector) Update(ch chan<- prometheus.Metric) error {
 
 		cgroupName := sanitizeP8sName(filepath.Base(dirName))
 		// Set the metric value with the directory label
-		for key, value := range metrics {
-			// Check if this is a range-based metric (format: "base_metric|label_value")
-			if strings.Contains(key, "|") {
-				parts := strings.Split(key, "|")
-				if len(parts) == 2 {
-					baseMetricName := sanitizeP8sName(parts[0])
-					labelValue := parts[1] // "0", "1", etc.
-					// Detect label name from file name: if it contains "mems", use "numanode", otherwise "cpu"
-					labelName := "cpu"
-					if strings.Contains(cc.fileName, "mems") {
-						labelName = "numanode"
-					}
+		for _, metric := range metrics {
+			metricName := sanitizeP8sName(metric.Name)
 
-					if cc.isCounter(baseMetricName) {
-						// Handle as Counter
-						if _, ok := cc.counterVecs[baseMetricName]; !ok {
-							cc.counterVecs[baseMetricName] = prometheus.NewCounterVec(
-								prometheus.CounterOpts{
-									Namespace: "cgroupv2",
-									Name:      baseMetricName,
-									Help:      fmt.Sprintf("metric %s from file %s", baseMetricName, cc.fileName),
-								},
-								[]string{"cgroup", labelName},
-							)
-						}
-						cc.counterVecs[baseMetricName].WithLabelValues(cgroupName, labelValue).Add(value)
-					} else {
-						// Handle as Gauge
-						if _, ok := cc.gaugeVecs[baseMetricName]; !ok {
-							cc.gaugeVecs[baseMetricName] = prometheus.NewGaugeVec(
-								prometheus.GaugeOpts{
-									Namespace: "cgroupv2",
-									Name:      baseMetricName,
-									Help:      fmt.Sprintf("metric %s from file %s", baseMetricName, cc.fileName),
-								},
-								[]string{"cgroup", labelName},
-							)
-						}
-						cc.gaugeVecs[baseMetricName].WithLabelValues(cgroupName, labelValue).Set(value)
-					}
-					cc.logger.Debug("collected metric", "name", baseMetricName, "value", value, "cgroup", cgroupName, labelName, labelValue)
-					continue
-				}
+			// Build label names and values: always include "cgroup", plus any labels from the parser
+			labelNames := []string{"cgroup"}
+			labelValues := []string{cgroupName}
+
+			// Add labels from the metric (e.g., "cpucore", "numanode", "device", "type", "stat")
+			for labelName, labelValue := range metric.Labels {
+				labelNames = append(labelNames, labelName)
+				labelValues = append(labelValues, labelValue)
 			}
 
-			// Handle regular metrics without dynamic labels
-			metricName := sanitizeP8sName(key)
-
-			if cc.isCounter(metricName) {
+			if cc.isCounter(metricName, metric.Labels) {
 				// Handle as Counter
 				if _, ok := cc.counterVecs[metricName]; !ok {
 					cc.counterVecs[metricName] = prometheus.NewCounterVec(
@@ -274,10 +246,10 @@ func (cc Cgroupv2FileCollector) Update(ch chan<- prometheus.Metric) error {
 							Name:      metricName,
 							Help:      fmt.Sprintf("metric %s from file %s", metricName, cc.fileName),
 						},
-						[]string{"cgroup"},
+						labelNames,
 					)
 				}
-				cc.counterVecs[metricName].WithLabelValues(cgroupName).Add(value)
+				cc.counterVecs[metricName].WithLabelValues(labelValues...).Add(metric.Value)
 			} else {
 				// Handle as Gauge
 				if _, ok := cc.gaugeVecs[metricName]; !ok {
@@ -287,12 +259,12 @@ func (cc Cgroupv2FileCollector) Update(ch chan<- prometheus.Metric) error {
 							Name:      metricName,
 							Help:      fmt.Sprintf("metric %s from file %s", metricName, cc.fileName),
 						},
-						[]string{"cgroup"},
+						labelNames,
 					)
 				}
-				cc.gaugeVecs[metricName].WithLabelValues(cgroupName).Set(value)
+				cc.gaugeVecs[metricName].WithLabelValues(labelValues...).Set(metric.Value)
 			}
-			cc.logger.Debug("collected metric", "name", metricName, "value", value, "cgroup", cgroupName)
+			cc.logger.Debug("collected metric", "name", metricName, "value", metric.Value, "labels", metric.Labels, "cgroup", cgroupName)
 		}
 	}
 

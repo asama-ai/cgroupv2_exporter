@@ -22,9 +22,12 @@ func NewMemoryPressureCollector(logger *slog.Logger, cgroups []string) (Collecto
 		dirNames: cgroups,
 		fileName: file,
 		logger:   fileLogger,
-		isCounter: func(metricName string) bool {
+		isCounter: func(metricName string, labels map[string]string) bool {
 			// total values are counters, avg values are gauges
-			return strings.HasSuffix(metricName, "total")
+			if typeLabel, ok := labels["type"]; ok {
+				return typeLabel == "total"
+			}
+			return false
 		},
 	}, nil
 }
@@ -43,7 +46,7 @@ func NewMemoryCurrentCollector(logger *slog.Logger, cgroups []string) (Collector
 		dirNames:  cgroups,
 		fileName:  file,
 		logger:    fileLogger,
-		isCounter: func(metricName string) bool { return false },
+		isCounter: func(metricName string, labels map[string]string) bool { return false },
 	}, nil
 }
 
@@ -61,7 +64,7 @@ func NewMemorySwapCurrentCollector(logger *slog.Logger, cgroups []string) (Colle
 		dirNames:  cgroups,
 		fileName:  file,
 		logger:    fileLogger,
-		isCounter: func(metricName string) bool { return false },
+		isCounter: func(metricName string, labels map[string]string) bool { return false },
 	}, nil
 }
 
@@ -79,7 +82,7 @@ func NewMemoryHighCollector(logger *slog.Logger, cgroups []string) (Collector, e
 		dirNames:  cgroups,
 		fileName:  file,
 		logger:    fileLogger,
-		isCounter: func(metricName string) bool { return false },
+		isCounter: func(metricName string, labels map[string]string) bool { return false },
 	}, nil
 }
 
@@ -97,8 +100,12 @@ func NewMemoryStatCollector(logger *slog.Logger, cgroups []string) (Collector, e
 		dirNames: cgroups,
 		fileName: file,
 		logger:   fileLogger,
-		isCounter: func(metricName string) bool {
-			return strings.HasSuffix(metricName, "_total")
+		isCounter: func(metricName string, labels map[string]string) bool {
+			// Check if stat label indicates a counter (e.g., "total" or other counter stats)
+			if statLabel, ok := labels["stat"]; ok {
+				return strings.HasSuffix(statLabel, "_total") || statLabel == "total"
+			}
+			return false
 		},
 	}, nil
 }

@@ -12,7 +12,14 @@ import (
 
 // Parser defines the interface for file parsers.
 type Parser interface {
-	Parse(io.Reader) (map[string]float64, error)
+	Parse(io.Reader) ([]Metric, error)
+}
+
+// Metric represents a parsed metric with its name, value, and labels.
+type Metric struct {
+	Name   string
+	Value  float64
+	Labels map[string]string
 }
 
 type SingleValueParser struct {
@@ -46,30 +53,38 @@ func readContent(file io.Reader) (string, error) {
 	return strings.TrimSpace(content.String()), nil
 }
 
-func (p *SingleValueParser) Parse(file io.Reader) (map[string]float64, error) {
+func (p *SingleValueParser) Parse(file io.Reader) ([]Metric, error) {
 	content, err := readContent(file)
 	if err != nil {
 		p.Logger.Error("error reading file", "err", err)
 		return nil, err
 	}
 	// Check if content is "max" and convert it to +Inf
+	var value float64
 	if content == "max" {
 		p.Logger.Debug("converting max to +Inf")
-		return map[string]float64{p.MetricPrefix: math.Inf(1)}, nil
+		value = math.Inf(1)
+	} else {
+		var err error
+		value, err = strconv.ParseFloat(content, 64)
+		if err != nil {
+			p.Logger.Error("failed to parse value", "err", err)
+			return nil, err
+		}
 	}
-
-	value, err := strconv.ParseFloat(content, 64)
-	if err != nil {
-		p.Logger.Error("failed to parse value", "err", err)
-		return nil, err
-	}
-	return map[string]float64{p.MetricPrefix: value}, nil
+	return []Metric{
+		{
+			Name:   p.MetricPrefix,
+			Value:  value,
+			Labels: map[string]string{},
+		},
+	}, nil
 }
 
-func (p *FlatKeyValueParser) Parse(file io.Reader) (map[string]float64, error) {
-	metrics := map[string]float64{}
+func (p *FlatKeyValueParser) Parse(file io.Reader) ([]Metric, error) {
+	var metrics []Metric
 
-	// Read the file line by line and parse PSI statistics
+	// Read the file line by line and parse key-value pairs
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -78,8 +93,17 @@ func (p *FlatKeyValueParser) Parse(file io.Reader) (map[string]float64, error) {
 			p.Logger.Error("invalid field count", "expected", 2, "got", len(parts))
 			continue
 		}
-		metricName := fmt.Sprintf("%s_%s", p.MetricPrefix, parts[0])
-		metrics[metricName], _ = strconv.ParseFloat(parts[1], 64)
+		value, err := strconv.ParseFloat(parts[1], 64)
+		if err != nil {
+			p.Logger.Error("failed to parse value", "err", err)
+			continue
+		}
+		// Use parts[0] as a label instead of embedding in metric name
+		metrics = append(metrics, Metric{
+			Name:   p.MetricPrefix,
+			Value:  value,
+			Labels: map[string]string{"stat": parts[0]},
+		})
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -90,8 +114,8 @@ func (p *FlatKeyValueParser) Parse(file io.Reader) (map[string]float64, error) {
 	return metrics, nil
 }
 
-func (p *NestedKeyValueParser) Parse(file io.Reader) (map[string]float64, error) {
-	metrics := map[string]float64{}
+func (p *NestedKeyValueParser) Parse(file io.Reader) ([]Metric, error) {
+	var metrics []Metric
 
 	// Read the file line by line and parse
 	scanner := bufio.NewScanner(file)
@@ -109,8 +133,23 @@ func (p *NestedKeyValueParser) Parse(file io.Reader) (map[string]float64, error)
 				p.Logger.Error("failed to parse key-value pair", "input", m)
 				continue
 			}
-			metricName := fmt.Sprintf("%s_%s_%s", p.MetricPrefix, prefix, metric[0])
-			metrics[metricName], _ = strconv.ParseFloat(metric[1], 64)
+			metricName := fmt.Sprintf("%s_%s", p.MetricPrefix, metric[0])
+			value, err := strconv.ParseFloat(metric[1], 64)
+			if err != nil {
+				p.Logger.Error("failed to parse value", "err", err)
+				continue
+			}
+			// Use prefix as a label (e.g., device ID like "259:0" or pressure type like "some", "full")
+			// Detect label name: if metric prefix contains "pressure", use "type", otherwise use "device"
+			labelName := "device"
+			if strings.Contains(p.MetricPrefix, "pressure") {
+				labelName = "type"
+			}
+			metrics = append(metrics, Metric{
+				Name:   metricName,
+				Value:  value,
+				Labels: map[string]string{labelName: prefix},
+			})
 		}
 	}
 
@@ -122,8 +161,15 @@ func (p *NestedKeyValueParser) Parse(file io.Reader) (map[string]float64, error)
 	return metrics, nil
 }
 
-func (p *RangeListCountParser) Parse(file io.Reader) (map[string]float64, error) {
-	metrics := map[string]float64{}
+func (p *RangeListCountParser) Parse(file io.Reader) ([]Metric, error) {
+	var metrics []Metric
+
+	// cpuset.cpus or cpuset.cpus.effective → "cpucore"
+	// cpuset.mems or cpuset.mems.effective → "numanode"
+	labelName := "cpucore" // Default for CPU-related metrics
+	if strings.Contains(p.MetricPrefix, "mems") {
+		labelName = "numanode"
+	}
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -154,10 +200,11 @@ func (p *RangeListCountParser) Parse(file io.Reader) (map[string]float64, error)
 				}
 
 				for i := start; i <= end; i++ {
-					// Use base metric name with label value as separator for collector to parse
-					// Format: "base_metric_name|label_value" (label name will be detected in collector)
-					metricName := p.MetricPrefix + "|" + strconv.Itoa(i)
-					metrics[metricName] = 1
+					metrics = append(metrics, Metric{
+						Name:   p.MetricPrefix,
+						Value:  1,
+						Labels: map[string]string{labelName: strconv.Itoa(i)},
+					})
 				}
 
 			} else {
@@ -166,10 +213,11 @@ func (p *RangeListCountParser) Parse(file io.Reader) (map[string]float64, error)
 					p.Logger.Error("invalid value", "input", r, "err", err)
 					continue
 				}
-				// Use base metric name with label value as separator for collector to parse
-				// Format: "base_metric_name|label_value" (label name will be detected in collector)
-				metricName := p.MetricPrefix + "|" + strconv.Itoa(val)
-				metrics[metricName] = 1
+				metrics = append(metrics, Metric{
+					Name:   p.MetricPrefix,
+					Value:  1,
+					Labels: map[string]string{labelName: strconv.Itoa(val)},
+				})
 			}
 		}
 	}
