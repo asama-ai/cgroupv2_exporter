@@ -159,37 +159,46 @@ func TestRangeListCountParser(t *testing.T) {
 		expectedMetrics map[string]float64
 	}{
 		{
-			name:         "range and single values",
+			name:         "range and single values with cpu",
 			fileContent:  "0-3,8,10-11",
 			metricPrefix: "cpuset_cpus",
 			expectedMetrics: map[string]float64{
-				"cpuset_cpus_cpu_0":  1,
-				"cpuset_cpus_cpu_1":  1,
-				"cpuset_cpus_cpu_2":  1,
-				"cpuset_cpus_cpu_3":  1,
-				"cpuset_cpus_cpu_8":  1,
-				"cpuset_cpus_cpu_10": 1,
-				"cpuset_cpus_cpu_11": 1,
+				"cpuset_cpus|0":  1,
+				"cpuset_cpus|1":  1,
+				"cpuset_cpus|2":  1,
+				"cpuset_cpus|3":  1,
+				"cpuset_cpus|8":  1,
+				"cpuset_cpus|10": 1,
+				"cpuset_cpus|11": 1,
 			},
 		},
 		{
-			name:         "single range",
+			name:         "single range with cpu",
 			fileContent:  "4-8",
 			metricPrefix: "cpuset_cpus",
 			expectedMetrics: map[string]float64{
-				"cpuset_cpus_cpu_4": 1,
-				"cpuset_cpus_cpu_5": 1,
-				"cpuset_cpus_cpu_6": 1,
-				"cpuset_cpus_cpu_7": 1,
-				"cpuset_cpus_cpu_8": 1,
+				"cpuset_cpus|4": 1,
+				"cpuset_cpus|5": 1,
+				"cpuset_cpus|6": 1,
+				"cpuset_cpus|7": 1,
+				"cpuset_cpus|8": 1,
 			},
 		},
 		{
-			name:         "single value",
+			name:         "single value with cpu",
 			fileContent:  "5",
 			metricPrefix: "cpuset_cpus",
 			expectedMetrics: map[string]float64{
-				"cpuset_cpus_cpu_5": 1,
+				"cpuset_cpus|5": 1,
+			},
+		},
+		{
+			name:         "range with numanode",
+			fileContent:  "0-1",
+			metricPrefix: "cpuset_mems",
+			expectedMetrics: map[string]float64{
+				"cpuset_mems|0": 1,
+				"cpuset_mems|1": 1,
 			},
 		},
 		{
