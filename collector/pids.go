@@ -21,7 +21,7 @@ func NewPidsCurrentCollector(logger *slog.Logger, cgroups []string) (Collector, 
 		dirNames:  cgroups,
 		fileName:  file,
 		logger:    fileLogger,
-		isCounter: func(metricName string) bool { return false },
+		isCounter: func(metricName string, labels map[string]string) bool { return false },
 	}, nil
 }
 
@@ -39,6 +39,6 @@ func NewPidsPeakCollector(logger *slog.Logger, cgroups []string) (Collector, err
 		dirNames:  cgroups,
 		fileName:  file,
 		logger:    fileLogger,
-		isCounter: func(metricName string) bool { return false },
+		isCounter: func(metricName string, labels map[string]string) bool { return false },
 	}, nil
 }

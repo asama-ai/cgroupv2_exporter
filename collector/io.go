@@ -2,7 +2,6 @@ package collector
 
 import (
 	"log/slog"
-	"strings"
 
 	"github.com/asama-ai/cgroupv2_exporter/parsers"
 	"github.com/prometheus/client_golang/prometheus"
@@ -22,9 +21,12 @@ func NewIoPressureCollector(logger *slog.Logger, cgroups []string) (Collector, e
 		dirNames: cgroups,
 		fileName: file,
 		logger:   fileLogger,
-		isCounter: func(metricName string) bool {
+		isCounter: func(metricName string, labels map[string]string) bool {
 			// total values are counters, avg values are gauges
-			return strings.HasSuffix(metricName, "total")
+			if typeLabel, ok := labels["type"]; ok {
+				return typeLabel == "total"
+			}
+			return false
 		},
 	}, nil
 }
@@ -43,6 +45,6 @@ func NewIoStatCollector(logger *slog.Logger, cgroups []string) (Collector, error
 		dirNames:  cgroups,
 		fileName:  file,
 		logger:    fileLogger,
-		isCounter: func(metricName string) bool { return true },
+		isCounter: func(metricName string, labels map[string]string) bool { return true },
 	}, nil
 }
