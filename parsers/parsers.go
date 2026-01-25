@@ -166,7 +166,7 @@ func (p *RangeListCountParser) Parse(file io.Reader) ([]Metric, error) {
 
 	// cpuset.cpus or cpuset.cpus.effective → "cpucore"
 	// cpuset.mems or cpuset.mems.effective → "numanode"
-	labelName := "cpucore" // Default for CPU-related metrics
+	labelName := "cpu" // Default for CPU-related metrics
 	if strings.Contains(p.MetricPrefix, "mems") {
 		labelName = "numanode"
 	}
