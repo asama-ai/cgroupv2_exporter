@@ -276,6 +276,7 @@ func init() {
 	registerCollector("memory.swap.current", defaultEnabled, NewMemorySwapCurrentCollector)
 	registerCollector("memory.high", defaultEnabled, NewMemoryHighCollector)
 	registerCollector("memory.stat", defaultDisabled, NewMemoryStatCollector)
+	registerCollector("cpu.pressure", defaultEnabled, NewCpuPressureCollector)
 	registerCollector("cpuset.cpus", defaultEnabled, NewCPUSetCpusCollector)
 	registerCollector("cpuset.cpus.effective", defaultEnabled, NewCPUSetCpusEffectiveCollector)
 	registerCollector("cpu.stat", defaultEnabled, NewCpuStatCollector)
