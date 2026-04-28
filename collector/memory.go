@@ -23,7 +23,8 @@ func memoryStatIsCounter(stat string) bool {
 		return true
 	}
 	switch stat {
-	case "pgfault", "pgmajfault", "oom_kill", "pglazyfree", "pglazyfreed":
+	case "pgfault", "pgmajfault", "pgrefill", "pgactivate", "pgdeactivate",
+		"oom_kill", "pglazyfree", "pglazyfreed":
 		return true
 	default:
 		return false

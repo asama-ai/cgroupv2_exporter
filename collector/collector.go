@@ -169,6 +169,8 @@ func escapeLabelValue(s string) string {
 			b.WriteString(`\"`)
 		case '\n':
 			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
 		default:
 			b.WriteRune(r)
 		}
@@ -246,31 +248,33 @@ func (cc *Cgroupv2FileCollector) Update(metricSet *metrics.Set) error {
 			cc.logger.Error("failed to open file", "dir", dirName, "err", err)
 			continue
 		}
-		metricsFromFile, err := cc.parser.Parse(file)
-		file.Close()
-		if err != nil {
-			cc.logger.Error("failed to parse file", "dir", dirName, "err", err)
-			continue
-		}
-
-		cgroupName := sanitizeP8sName(filepath.Base(dirName))
-		for _, metric := range metricsFromFile {
-			metricName := sanitizeP8sName(metric.Name)
-
-			labels := make(map[string]string, 1+len(metric.Labels))
-			labels["cgroup"] = cgroupName
-			for labelName, labelValue := range metric.Labels {
-				labels[labelName] = labelValue
+		func() {
+			defer file.Close()
+			metricsFromFile, err := cc.parser.Parse(file)
+			if err != nil {
+				cc.logger.Error("failed to parse file", "dir", dirName, "err", err)
+				return
 			}
 
-			id := formatMetricID(joinFQ(metricName), labels)
-			if cc.isCounter(metricName, metric.Labels) {
-				metricSet.GetOrCreateFloatCounter(id).Set(metric.Value)
-			} else {
-				metricSet.GetOrCreateGauge(id, nil).Set(metric.Value)
+			cgroupName := sanitizeP8sName(filepath.Base(dirName))
+			for _, metric := range metricsFromFile {
+				metricName := sanitizeP8sName(metric.Name)
+
+				labels := make(map[string]string, 1+len(metric.Labels))
+				labels["cgroup"] = cgroupName
+				for labelName, labelValue := range metric.Labels {
+					labels[labelName] = labelValue
+				}
+
+				id := formatMetricID(joinFQ(metricName), labels)
+				if cc.isCounter(metricName, metric.Labels) {
+					metricSet.GetOrCreateFloatCounter(id).Set(metric.Value)
+				} else {
+					metricSet.GetOrCreateGauge(id, nil).Set(metric.Value)
+				}
+				cc.logger.Debug("collected metric", "name", metricName, "value", metric.Value, "labels", metric.Labels, "cgroup", cgroupName)
 			}
-			cc.logger.Debug("collected metric", "name", metricName, "value", metric.Value, "labels", metric.Labels, "cgroup", cgroupName)
-		}
+		}()
 	}
 
 	return nil
