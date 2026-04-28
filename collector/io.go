@@ -45,6 +45,7 @@ func NewIoStatCollector(logger *slog.Logger, cgroups []string) (Collector, error
 		dirNames:  cgroups,
 		fileName:  file,
 		logger:    fileLogger,
-		isCounter: func(metricName string, labels map[string]string) bool { return true },
+		// Same as cpu.stat: io.stat fields are absolute cumulative counters from the kernel.
+		isCounter: func(metricName string, labels map[string]string) bool { return false },
 	}, nil
 }

@@ -21,7 +21,8 @@ func NewCpuStatCollector(logger *slog.Logger, cgroups []string) (Collector, erro
 		dirNames:  cgroups,
 		fileName:  file,
 		logger:    fileLogger,
-		isCounter: func(metricName string, labels map[string]string) bool { return true },
+		// Kernel exposes absolute cumulative values; Counter.Add would sum them on every scrape.
+		isCounter: func(metricName string, labels map[string]string) bool { return false },
 	}, nil
 }
 
