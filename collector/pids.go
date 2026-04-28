@@ -4,7 +4,6 @@ import (
 	"log/slog"
 
 	"github.com/asama-ai/cgroupv2_exporter/parsers"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 func NewPidsCurrentCollector(logger *slog.Logger, cgroups []string) (Collector, error) {
@@ -12,8 +11,6 @@ func NewPidsCurrentCollector(logger *slog.Logger, cgroups []string) (Collector, 
 	fileLogger := slog.With(logger, "file", file)
 
 	return &Cgroupv2FileCollector{
-		gaugeVecs:   make(map[string]*prometheus.GaugeVec),
-		counterVecs: make(map[string]*prometheus.CounterVec),
 		parser: &parsers.SingleValueParser{
 			MetricPrefix: sanitizeP8sName(file),
 			Logger:       fileLogger,
@@ -30,8 +27,6 @@ func NewPidsPeakCollector(logger *slog.Logger, cgroups []string) (Collector, err
 	fileLogger := slog.With(logger, "file", file)
 
 	return &Cgroupv2FileCollector{
-		gaugeVecs:   make(map[string]*prometheus.GaugeVec),
-		counterVecs: make(map[string]*prometheus.CounterVec),
 		parser: &parsers.SingleValueParser{
 			MetricPrefix: sanitizeP8sName(file),
 			Logger:       fileLogger,

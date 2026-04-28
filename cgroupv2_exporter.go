@@ -18,7 +18,6 @@ package main
 
 import (
 	"fmt"
-	stdlog "log"
 	"log/slog"
 	"net/http"
 	_ "net/http/pprof"
@@ -28,56 +27,35 @@ import (
 	"runtime"
 	"sort"
 
+	"github.com/VictoriaMetrics/metrics"
+	"github.com/alecthomas/kingpin/v2"
+	"github.com/asama-ai/cgroupv2_exporter/collector"
 	"github.com/prometheus/common/promslog"
 	"github.com/prometheus/common/promslog/flag"
 	"github.com/prometheus/common/version"
-
-	"github.com/alecthomas/kingpin/v2"
-	"github.com/asama-ai/cgroupv2_exporter/collector"
-	"github.com/prometheus/client_golang/prometheus"
-	promcollectors "github.com/prometheus/client_golang/prometheus/collectors"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/exporter-toolkit/web"
 	"github.com/prometheus/exporter-toolkit/web/kingpinflag"
 )
-
-// slogWriter adapts slog.Logger to io.Writer for promhttp
-type slogWriter struct {
-	logger *slog.Logger
-}
-
-func (w *slogWriter) Write(p []byte) (n int, err error) {
-	w.logger.Error(string(p))
-	return len(p), nil
-}
 
 // handler wraps an unfiltered http.Handler but uses a filtered handler,
 // created on the fly, if filtering is requested. Create instances with
 // newHandler.
 type handler struct {
 	unfilteredHandler http.Handler
-	// exporterMetricsRegistry is a separate registry for the metrics about
-	// the exporter itself.
-	exporterMetricsRegistry *prometheus.Registry
-	includeExporterMetrics  bool
-	maxRequests             int
-	logger                  *slog.Logger
-	cgroups                 []string
+	scrapeSem         chan struct{}
+	includeExporter   bool
+	logger            *slog.Logger
+	cgroups           []string
 }
 
 func newHandler(cgroups []string, includeExporterMetrics bool, maxRequests int, logger *slog.Logger) *handler {
 	h := &handler{
-		exporterMetricsRegistry: prometheus.NewRegistry(),
-		includeExporterMetrics:  includeExporterMetrics,
-		maxRequests:             maxRequests,
-		logger:                  logger,
-		cgroups:                 cgroups,
+		includeExporter: includeExporterMetrics,
+		logger:          logger,
+		cgroups:         cgroups,
 	}
-	if h.includeExporterMetrics {
-		h.exporterMetricsRegistry.MustRegister(
-			promcollectors.NewProcessCollector(promcollectors.ProcessCollectorOpts{}),
-			promcollectors.NewGoCollector(),
-		)
+	if maxRequests > 0 {
+		h.scrapeSem = make(chan struct{}, maxRequests)
 	}
 	if innerHandler, err := h.innerHandler(cgroups); err != nil {
 		panic(fmt.Sprintf("Couldn't create metrics handler: %s", err))
@@ -93,11 +71,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.logger.Debug("collect query", slog.Any("filters", filters))
 
 	if len(filters) == 0 {
-		// No filters, use the prepared unfiltered handler.
 		h.unfilteredHandler.ServeHTTP(w, r)
 		return
 	}
-	// To serve filtered metrics, we create a filtering handler on the fly.
 	filteredHandler, err := h.innerHandler(h.cgroups, filters...)
 	if err != nil {
 		h.logger.Warn("Couldn't create filtered metrics handler", "err", err)
@@ -119,53 +95,36 @@ func (h *handler) innerHandler(cgroups []string, filters ...string) (http.Handle
 		return nil, fmt.Errorf("couldn't create collector: %s", err)
 	}
 
-	// Only log the creation of an unfiltered handler, which should happen
-	// only once upon startup.
 	if len(filters) == 0 {
 		h.logger.Info("enabled collectors")
-		collectors := []string{}
+		names := make([]string, 0, len(cgc.Collectors))
 		for n := range cgc.Collectors {
-			collectors = append(collectors, n)
+			names = append(names, n)
 		}
-		sort.Strings(collectors)
-		for _, c := range collectors {
-			h.logger.Info("collector enabled", "name", c)
+		sort.Strings(names)
+		for _, name := range names {
+			h.logger.Info("collector enabled", "name", name)
 		}
 	}
 
-	r := prometheus.NewRegistry()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h.scrapeSem != nil {
+			h.scrapeSem <- struct{}{}
+			defer func() { <-h.scrapeSem }()
+		}
 
-	// Create version collector
-	versionCollector := prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "cgroupv2_exporter_build_info",
-			Help: "A metric with a constant '1' value labeled by version, revision, branch, and goversion from which cgroupv2_exporter was built.",
-		},
-		[]string{"version", "revision", "branch", "goversion"},
-	)
-	versionCollector.WithLabelValues(version.Version, version.Revision, version.Branch, version.GoVersion).Set(1)
-	r.MustRegister(versionCollector)
+		ms := metrics.NewSet()
+		ms.GetOrCreateGauge(collector.BuildInfoMetric(
+			version.Version, version.Revision, version.Branch, version.GoVersion,
+		), nil).Set(1)
 
-	if err := r.Register(cgc); err != nil {
-		return nil, fmt.Errorf("couldn't register cgroupv2 collector: %s", err)
-	}
-	handler := promhttp.HandlerFor(
-		prometheus.Gatherers{h.exporterMetricsRegistry, r},
-		promhttp.HandlerOpts{
-			ErrorLog:            stdlog.New(&slogWriter{logger: h.logger}, "", 0),
-			ErrorHandling:       promhttp.ContinueOnError,
-			MaxRequestsInFlight: h.maxRequests,
-			Registry:            h.exporterMetricsRegistry,
-		},
-	)
-	if h.includeExporterMetrics {
-		// Note that we have to use h.exporterMetricsRegistry here to
-		// use the same promhttp metrics for all expositions.
-		handler = promhttp.InstrumentMetricHandler(
-			h.exporterMetricsRegistry, handler,
-		)
-	}
-	return handler, nil
+		cgc.Scrape(ms)
+
+		ms.WritePrometheus(w)
+		if h.includeExporter {
+			metrics.WriteProcessMetrics(w)
+		}
+	}), nil
 }
 
 func main() {
@@ -180,7 +139,7 @@ func main() {
 		).Default("/metrics").String()
 		disableExporterMetrics = kingpin.Flag(
 			"web.disable-exporter-metrics",
-			"Exclude metrics about the exporter itself (promhttp_*, process_*, go_*).",
+			"Exclude metrics about the exporter itself (process_*, go_*).",
 		).Bool()
 		maxRequests = kingpin.Flag(
 			"web.max-requests",
@@ -216,7 +175,6 @@ func main() {
 	runtime.GOMAXPROCS(*maxProcs)
 	logger.Debug("Go MAXPROCS", "procs", runtime.GOMAXPROCS(0))
 
-	// Expand all glob patterns to get list of directories
 	var allCgroups []string
 	for _, globPattern := range *cgroupGlobs {
 		matches, err := filepath.Glob(globPattern)
@@ -224,7 +182,6 @@ func main() {
 			logger.Error("Failed to expand glob pattern", "pattern", globPattern, "err", err)
 			continue
 		}
-		// Only append directories
 		for _, match := range matches {
 			fi, err := os.Stat(match)
 			if err != nil {

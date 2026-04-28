@@ -7,38 +7,19 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/VictoriaMetrics/metrics"
 	"github.com/alecthomas/kingpin/v2"
 	"github.com/asama-ai/cgroupv2_exporter/parsers"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 // Namespace defines the common namespace to be used by all metrics.
 const namespace = "cgroupv2"
-
-var (
-	scrapeDurationDesc = prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, "scrape", "collector_duration_seconds"),
-		"cgroupv2_exporter: Duration of a collector scrape.",
-		[]string{"collector"},
-		nil,
-	)
-	scrapeSuccessDesc = prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, "scrape", "collector_success"),
-		"cgroupv2_exporter: Whether a collector succeeded.",
-		[]string{"collector"},
-		nil,
-	)
-)
-
-const (
-	defaultEnabled  = true
-	defaultDisabled = false
-)
 
 var (
 	factories              = make(map[string]func(logger *slog.Logger, cgroups []string) (Collector, error))
@@ -72,13 +53,17 @@ type Cgroup2Collector struct {
 }
 
 type Cgroupv2FileCollector struct {
-	gaugeVecs   map[string]*prometheus.GaugeVec
-	counterVecs map[string]*prometheus.CounterVec
-	parser      parsers.Parser
-	dirNames    []string
-	fileName    string
-	logger      *slog.Logger
-	isCounter   func(metricName string, labels map[string]string) bool
+	parser    parsers.Parser
+	dirNames  []string
+	fileName  string
+	logger    *slog.Logger
+	isCounter func(metricName string, labels map[string]string) bool
+}
+
+// isPressureTotalField matches cgroup *.pressure cumulative stall time (the total=... field).
+// NestedKeyValueParser uses label "type" for some|full; the field name is the metric suffix (_total).
+func isPressureTotalField(metricName string) bool {
+	return strings.HasSuffix(metricName, "_total")
 }
 
 // DisableDefaultCollectors sets the collector state to false for all collectors which
@@ -136,8 +121,17 @@ func NewCgroupv2Collector(cgroups []string, logger *slog.Logger, filters ...stri
 	return &Cgroup2Collector{Collectors: collectors, logger: logger}, nil
 }
 
-func (cgc *Cgroup2Collector) Describe(ch chan<- *prometheus.Desc) {
-	// Describe is required for the prometheus.Collector interface but is not used in this project.
+// Scrape runs all collectors and writes series into metricSet (typically a fresh Set per HTTP request).
+func (cgc *Cgroup2Collector) Scrape(metricSet *metrics.Set) {
+	wg := sync.WaitGroup{}
+	wg.Add(len(cgc.Collectors))
+	for name, c := range cgc.Collectors {
+		go func(name string, c Collector) {
+			defer wg.Done()
+			execute(metricSet, name, c, cgc.logger)
+		}(name, c)
+	}
+	wg.Wait()
 }
 
 func sanitizeP8sName(name string) string {
@@ -159,22 +153,67 @@ func sanitizeP8sName(name string) string {
 	return name
 }
 
-// Collect implements the prometheus.Collector interface.
-func (cgc *Cgroup2Collector) Collect(ch chan<- prometheus.Metric) {
-	wg := sync.WaitGroup{}
-	wg.Add(len(cgc.Collectors))
-	for name, c := range cgc.Collectors {
-		go func(name string, c Collector) {
-			execute(name, c, ch, cgc.logger)
-			wg.Done()
-		}(name, c)
-	}
-	wg.Wait()
+func joinFQ(metricName string) string {
+	return namespace + "_" + metricName
 }
 
-func execute(name string, c Collector, ch chan<- prometheus.Metric, logger *slog.Logger) {
+// escapeLabelValue formats s as a Prometheus label value (quoted, escaped).
+func escapeLabelValue(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\n':
+			b.WriteString(`\n`)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+func formatMetricID(fqMetricName string, labels map[string]string) string {
+	if len(labels) == 0 {
+		return fqMetricName
+	}
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteString(fqMetricName)
+	b.WriteByte('{')
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(escapeLabelValue(labels[k]))
+	}
+	b.WriteByte('}')
+	return b.String()
+}
+
+// BuildInfoMetric returns the metric id for cgroupv2_exporter_build_info with the given labels.
+func BuildInfoMetric(version, revision, branch, goversion string) string {
+	return formatMetricID(joinFQ("exporter_build_info"), map[string]string{
+		"version":   version,
+		"revision":  revision,
+		"branch":    branch,
+		"goversion": goversion,
+	})
+}
+
+func execute(metricSet *metrics.Set, name string, c Collector, logger *slog.Logger) {
 	begin := time.Now()
-	err := c.Update(ch)
+	err := c.Update(metricSet)
 	duration := time.Since(begin)
 	var success float64
 
@@ -189,24 +228,17 @@ func execute(name string, c Collector, ch chan<- prometheus.Metric, logger *slog
 		logger.Debug("collector succeeded", "name", name, "duration_seconds", duration.Seconds())
 		success = 1
 	}
-	ch <- prometheus.MustNewConstMetric(scrapeDurationDesc, prometheus.GaugeValue, duration.Seconds(), name)
-	ch <- prometheus.MustNewConstMetric(scrapeSuccessDesc, prometheus.GaugeValue, success, name)
+	durID := formatMetricID(joinFQ("scrape_collector_duration_seconds"), map[string]string{"collector": name})
+	metricSet.GetOrCreateGauge(durID, nil).Set(duration.Seconds())
+	okID := formatMetricID(joinFQ("scrape_collector_success"), map[string]string{"collector": name})
+	metricSet.GetOrCreateGauge(okID, nil).Set(success)
 }
 
-// type metric struct{
-// 	name string
-// 	value float64
-// 	labels []
-
-// }
-
-func (cc Cgroupv2FileCollector) Update(ch chan<- prometheus.Metric) error {
-	// Use the parser to fetch metrics for the specified file in all cgroup directories
+func (cc *Cgroupv2FileCollector) Update(metricSet *metrics.Set) error {
 	for _, dirName := range cc.dirNames {
 		filePath := filepath.Join(dirName, cc.fileName)
 		file, err := os.Open(filePath)
 		if err != nil {
-			// Silently skip if file doesn't exist (some cgroups don't have all files)
 			if os.IsNotExist(err) {
 				cc.logger.Debug("file not found, skipping", "file", cc.fileName, "dir", dirName)
 				continue
@@ -214,66 +246,31 @@ func (cc Cgroupv2FileCollector) Update(ch chan<- prometheus.Metric) error {
 			cc.logger.Error("failed to open file", "dir", dirName, "err", err)
 			continue
 		}
-		defer file.Close()
-
-		metrics, err := cc.parser.Parse(file)
+		metricsFromFile, err := cc.parser.Parse(file)
+		file.Close()
 		if err != nil {
 			cc.logger.Error("failed to parse file", "dir", dirName, "err", err)
 			continue
 		}
 
 		cgroupName := sanitizeP8sName(filepath.Base(dirName))
-		// Set the metric value with the directory label
-		for _, metric := range metrics {
+		for _, metric := range metricsFromFile {
 			metricName := sanitizeP8sName(metric.Name)
 
-			// Build label names and values: always include "cgroup", plus any labels from the parser
-			labelNames := []string{"cgroup"}
-			labelValues := []string{cgroupName}
-
-			// Add labels from the metric (e.g., "cpucore", "numanode", "device", "type", "stat")
+			labels := make(map[string]string, 1+len(metric.Labels))
+			labels["cgroup"] = cgroupName
 			for labelName, labelValue := range metric.Labels {
-				labelNames = append(labelNames, labelName)
-				labelValues = append(labelValues, labelValue)
+				labels[labelName] = labelValue
 			}
 
+			id := formatMetricID(joinFQ(metricName), labels)
 			if cc.isCounter(metricName, metric.Labels) {
-				// Handle as Counter
-				if _, ok := cc.counterVecs[metricName]; !ok {
-					cc.counterVecs[metricName] = prometheus.NewCounterVec(
-						prometheus.CounterOpts{
-							Namespace: "cgroupv2",
-							Name:      metricName,
-							Help:      fmt.Sprintf("metric %s from file %s", metricName, cc.fileName),
-						},
-						labelNames,
-					)
-				}
-				cc.counterVecs[metricName].WithLabelValues(labelValues...).Add(metric.Value)
+				metricSet.GetOrCreateFloatCounter(id).Set(metric.Value)
 			} else {
-				// Handle as Gauge
-				if _, ok := cc.gaugeVecs[metricName]; !ok {
-					cc.gaugeVecs[metricName] = prometheus.NewGaugeVec(
-						prometheus.GaugeOpts{
-							Namespace: "cgroupv2",
-							Name:      metricName,
-							Help:      fmt.Sprintf("metric %s from file %s", metricName, cc.fileName),
-						},
-						labelNames,
-					)
-				}
-				cc.gaugeVecs[metricName].WithLabelValues(labelValues...).Set(metric.Value)
+				metricSet.GetOrCreateGauge(id, nil).Set(metric.Value)
 			}
 			cc.logger.Debug("collected metric", "name", metricName, "value", metric.Value, "labels", metric.Labels, "cgroup", cgroupName)
 		}
-	}
-
-	// Collect all metrics at once after setting their values
-	for _, vec := range cc.gaugeVecs {
-		vec.Collect(ch)
-	}
-	for _, vec := range cc.counterVecs {
-		vec.Collect(ch)
 	}
 
 	return nil
@@ -281,8 +278,7 @@ func (cc Cgroupv2FileCollector) Update(ch chan<- prometheus.Metric) error {
 
 // Collector is the interface a collector has to implement.
 type Collector interface {
-	// Get new metrics and expose them via prometheus registry.
-	Update(ch chan<- prometheus.Metric) error
+	Update(metricSet *metrics.Set) error
 }
 
 // ErrNoData indicates the collector found no data to collect, but had no other error.
@@ -309,3 +305,8 @@ func init() {
 	registerCollector("pids.current", defaultEnabled, NewPidsCurrentCollector)
 	registerCollector("pids.peak", defaultEnabled, NewPidsPeakCollector)
 }
+
+const (
+	defaultEnabled  = true
+	defaultDisabled = false
+)

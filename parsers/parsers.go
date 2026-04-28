@@ -164,7 +164,7 @@ func (p *NestedKeyValueParser) Parse(file io.Reader) ([]Metric, error) {
 func (p *RangeListCountParser) Parse(file io.Reader) ([]Metric, error) {
 	var metrics []Metric
 
-	// cpuset.cpus or cpuset.cpus.effective → "cpucore"
+	// cpuset.cpus or cpuset.cpus.effective → "cpu"
 	// cpuset.mems or cpuset.mems.effective → "numanode"
 	labelName := "cpu" // Default for CPU-related metrics
 	if strings.Contains(p.MetricPrefix, "mems") {

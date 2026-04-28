@@ -4,7 +4,6 @@ import (
 	"log/slog"
 
 	"github.com/asama-ai/cgroupv2_exporter/parsers"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 func NewIoPressureCollector(logger *slog.Logger, cgroups []string) (Collector, error) {
@@ -12,22 +11,14 @@ func NewIoPressureCollector(logger *slog.Logger, cgroups []string) (Collector, e
 	fileLogger := slog.With(logger, "file", file)
 
 	return &Cgroupv2FileCollector{
-		gaugeVecs:   make(map[string]*prometheus.GaugeVec),
-		counterVecs: make(map[string]*prometheus.CounterVec),
 		parser: &parsers.NestedKeyValueParser{
 			MetricPrefix: sanitizeP8sName(file),
 			Logger:       fileLogger,
 		},
-		dirNames: cgroups,
-		fileName: file,
-		logger:   fileLogger,
-		isCounter: func(metricName string, labels map[string]string) bool {
-			// total values are counters, avg values are gauges
-			if typeLabel, ok := labels["type"]; ok {
-				return typeLabel == "total"
-			}
-			return false
-		},
+		dirNames:  cgroups,
+		fileName:  file,
+		logger:    fileLogger,
+		isCounter: func(metricName string, _ map[string]string) bool { return isPressureTotalField(metricName) },
 	}, nil
 }
 
@@ -36,16 +27,14 @@ func NewIoStatCollector(logger *slog.Logger, cgroups []string) (Collector, error
 	fileLogger := slog.With(logger, "file", file)
 
 	return &Cgroupv2FileCollector{
-		gaugeVecs:   make(map[string]*prometheus.GaugeVec),
-		counterVecs: make(map[string]*prometheus.CounterVec),
 		parser: &parsers.NestedKeyValueParser{
 			MetricPrefix: sanitizeP8sName(file),
 			Logger:       fileLogger,
 		},
-		dirNames:  cgroups,
-		fileName:  file,
-		logger:    fileLogger,
-		// Same as cpu.stat: io.stat fields are absolute cumulative counters from the kernel.
-		isCounter: func(metricName string, labels map[string]string) bool { return false },
+		dirNames: cgroups,
+		fileName: file,
+		logger:   fileLogger,
+		// Per-device rbytes, wbytes, rios, wios, etc. are cumulative.
+		isCounter: func(metricName string, labels map[string]string) bool { return true },
 	}, nil
 }

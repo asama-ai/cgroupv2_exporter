@@ -4,7 +4,6 @@ import (
 	"log/slog"
 
 	"github.com/asama-ai/cgroupv2_exporter/parsers"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 func NewCpuStatCollector(logger *slog.Logger, cgroups []string) (Collector, error) {
@@ -12,17 +11,15 @@ func NewCpuStatCollector(logger *slog.Logger, cgroups []string) (Collector, erro
 	fileLogger := slog.With(logger, "file", file)
 
 	return &Cgroupv2FileCollector{
-		gaugeVecs:   make(map[string]*prometheus.GaugeVec),
-		counterVecs: make(map[string]*prometheus.CounterVec),
 		parser: &parsers.FlatKeyValueParser{
 			MetricPrefix: sanitizeP8sName(file),
 			Logger:       fileLogger,
 		},
-		dirNames:  cgroups,
-		fileName:  file,
-		logger:    fileLogger,
-		// Kernel exposes absolute cumulative values; Counter.Add would sum them on every scrape.
-		isCounter: func(metricName string, labels map[string]string) bool { return false },
+		dirNames: cgroups,
+		fileName: file,
+		logger:   fileLogger,
+		// Cumulative kernel counters; FloatCounter.Set publishes the absolute value each scrape.
+		isCounter: func(metricName string, labels map[string]string) bool { return true },
 	}, nil
 }
 
@@ -31,22 +28,14 @@ func NewCpuPressureCollector(logger *slog.Logger, cgroups []string) (Collector, 
 	fileLogger := slog.With(logger, "file", file)
 
 	return &Cgroupv2FileCollector{
-		gaugeVecs:   make(map[string]*prometheus.GaugeVec),
-		counterVecs: make(map[string]*prometheus.CounterVec),
 		parser: &parsers.NestedKeyValueParser{
 			MetricPrefix: sanitizeP8sName(file),
 			Logger:       fileLogger,
 		},
-		dirNames: cgroups,
-		fileName: file,
-		logger:   fileLogger,
-		isCounter: func(metricName string, labels map[string]string) bool {
-			// total values are counters, avg values are gauges
-			if typeLabel, ok := labels["type"]; ok {
-				return typeLabel == "total"
-			}
-			return false
-		},
+		dirNames:  cgroups,
+		fileName:  file,
+		logger:    fileLogger,
+		isCounter: func(metricName string, _ map[string]string) bool { return isPressureTotalField(metricName) },
 	}, nil
 }
 
@@ -55,8 +44,6 @@ func NewCPUSetCpusCollector(logger *slog.Logger, cgroups []string) (Collector, e
 	fileLogger := slog.With(logger, "file", file)
 
 	return &Cgroupv2FileCollector{
-		gaugeVecs:   make(map[string]*prometheus.GaugeVec),
-		counterVecs: make(map[string]*prometheus.CounterVec),
 		parser: &parsers.RangeListCountParser{
 			MetricPrefix: sanitizeP8sName(file),
 			Logger:       fileLogger,
@@ -73,8 +60,6 @@ func NewCPUSetCpusEffectiveCollector(logger *slog.Logger, cgroups []string) (Col
 	fileLogger := slog.With(logger, "file", file)
 
 	return &Cgroupv2FileCollector{
-		gaugeVecs:   make(map[string]*prometheus.GaugeVec),
-		counterVecs: make(map[string]*prometheus.CounterVec),
 		parser: &parsers.RangeListCountParser{
 			MetricPrefix: sanitizeP8sName(file),
 			Logger:       fileLogger,
@@ -91,8 +76,6 @@ func NewCPUSetMemsCollector(logger *slog.Logger, cgroups []string) (Collector, e
 	fileLogger := slog.With(logger, "file", file)
 
 	return &Cgroupv2FileCollector{
-		gaugeVecs:   make(map[string]*prometheus.GaugeVec),
-		counterVecs: make(map[string]*prometheus.CounterVec),
 		parser: &parsers.RangeListCountParser{
 			MetricPrefix: sanitizeP8sName(file),
 			Logger:       fileLogger,
@@ -109,8 +92,6 @@ func NewCPUSetMemsEffectiveCollector(logger *slog.Logger, cgroups []string) (Col
 	fileLogger := slog.With(logger, "file", file)
 
 	return &Cgroupv2FileCollector{
-		gaugeVecs:   make(map[string]*prometheus.GaugeVec),
-		counterVecs: make(map[string]*prometheus.CounterVec),
 		parser: &parsers.RangeListCountParser{
 			MetricPrefix: sanitizeP8sName(file),
 			Logger:       fileLogger,

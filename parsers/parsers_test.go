@@ -190,13 +190,13 @@ func TestRangeListCountParser(t *testing.T) {
 			fileContent:  "0-3,8,10-11",
 			metricPrefix: "cpuset_cpus",
 			expected: []Metric{
-				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpucore": "0"}},
-				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpucore": "1"}},
-				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpucore": "2"}},
-				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpucore": "3"}},
-				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpucore": "8"}},
-				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpucore": "10"}},
-				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpucore": "11"}},
+				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpu": "0"}},
+				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpu": "1"}},
+				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpu": "2"}},
+				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpu": "3"}},
+				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpu": "8"}},
+				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpu": "10"}},
+				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpu": "11"}},
 			},
 		},
 		{
@@ -204,11 +204,11 @@ func TestRangeListCountParser(t *testing.T) {
 			fileContent:  "4-8",
 			metricPrefix: "cpuset_cpus",
 			expected: []Metric{
-				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpucore": "4"}},
-				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpucore": "5"}},
-				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpucore": "6"}},
-				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpucore": "7"}},
-				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpucore": "8"}},
+				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpu": "4"}},
+				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpu": "5"}},
+				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpu": "6"}},
+				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpu": "7"}},
+				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpu": "8"}},
 			},
 		},
 		{
@@ -216,7 +216,7 @@ func TestRangeListCountParser(t *testing.T) {
 			fileContent:  "5",
 			metricPrefix: "cpuset_cpus",
 			expected: []Metric{
-				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpucore": "5"}},
+				{Name: "cpuset_cpus", Value: 1, Labels: map[string]string{"cpu": "5"}},
 			},
 		},
 		{
