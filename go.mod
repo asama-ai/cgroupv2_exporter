@@ -1,6 +1,6 @@
 module github.com/asama-ai/cgroupv2_exporter
 
-go 1.25.0
+go 1.25.12
 
 require (
 	github.com/VictoriaMetrics/metrics v1.43.2
@@ -28,12 +28,12 @@ require (
 	github.com/valyala/histogram v1.2.0 // indirect
 	github.com/xhit/go-str2duration/v2 v2.1.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
-	golang.org/x/crypto v0.50.1-0.20260423152011-b9e53593a607 // indirect
-	golang.org/x/net v0.53.1-0.20260423181432-89624e152475 // indirect
+	golang.org/x/crypto v0.54.0 // indirect
+	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.43.1-0.20260423153702-fb1facd76f95 // indirect
-	golang.org/x/text v0.36.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
