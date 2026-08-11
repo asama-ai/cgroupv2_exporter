@@ -128,6 +128,8 @@ func (h *handler) innerHandler(cgroups []string, filters ...string) (http.Handle
 }
 
 func main() {
+	collector.RegisterCLIFlags()
+
 	var (
 		cgroupGlobs = kingpin.Flag(
 			"cgroup.glob",

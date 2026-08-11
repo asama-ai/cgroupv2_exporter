@@ -30,21 +30,30 @@ var (
 )
 
 func registerCollector(collector string, isDefaultEnabled bool, factory func(logger *slog.Logger, cgroups []string) (Collector, error)) {
-	var helpDefaultState string
-	if isDefaultEnabled {
-		helpDefaultState = "enabled"
-	} else {
-		helpDefaultState = "disabled"
-	}
-
-	flagName := fmt.Sprintf("collector.%s", collector)
-	flagHelp := fmt.Sprintf("Enable the %s collector (default: %s).", collector, helpDefaultState)
-	defaultValue := fmt.Sprintf("%v", isDefaultEnabled)
-
-	flag := kingpin.Flag(flagName, flagHelp).Default(defaultValue).Action(collectorFlagAction(collector)).Bool()
-	collectorState[collector] = flag
-
+	enabled := isDefaultEnabled
+	collectorState[collector] = &enabled
 	factories[collector] = factory
+}
+
+// RegisterCLIFlags registers kingpin flags for each collector and wires them to
+// collectorState. Call only from the cgroupv2_exporter binary main, before
+// kingpin.Parse, so library importers are not polluted with these flags.
+func RegisterCLIFlags() {
+	for collector, enabled := range collectorState {
+		var helpDefaultState string
+		if *enabled {
+			helpDefaultState = "enabled"
+		} else {
+			helpDefaultState = "disabled"
+		}
+
+		flagName := fmt.Sprintf("collector.%s", collector)
+		flagHelp := fmt.Sprintf("Enable the %s collector (default: %s).", collector, helpDefaultState)
+		defaultValue := fmt.Sprintf("%v", *enabled)
+
+		flag := kingpin.Flag(flagName, flagHelp).Default(defaultValue).Action(collectorFlagAction(collector)).Bool()
+		collectorState[collector] = flag
+	}
 }
 
 type Cgroup2Collector struct {
@@ -111,6 +120,27 @@ func NewCgroupv2Collector(cgroups []string, logger *slog.Logger, filters ...stri
 			collectors[key] = collector
 		} else {
 			collector, err := factories[key](slog.With(logger, "collector", key), cgroups)
+			if err != nil {
+				return nil, err
+			}
+			collectors[key] = collector
+			initiatedCollectors[key] = collector
+		}
+	}
+	return &Cgroup2Collector{Collectors: collectors, logger: logger}, nil
+}
+
+// NewCgroupv2CollectorAll instantiates every registered collector factory,
+// ignoring enable/disable state and filters. Intended for host-agent absorb.
+func NewCgroupv2CollectorAll(cgroups []string, logger *slog.Logger) (*Cgroup2Collector, error) {
+	collectors := make(map[string]Collector)
+	initiatedCollectorsMtx.Lock()
+	defer initiatedCollectorsMtx.Unlock()
+	for key, factory := range factories {
+		if collector, ok := initiatedCollectors[key]; ok {
+			collectors[key] = collector
+		} else {
+			collector, err := factory(slog.With(logger, "collector", key), cgroups)
 			if err != nil {
 				return nil, err
 			}

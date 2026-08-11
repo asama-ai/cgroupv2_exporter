@@ -1,8 +1,6 @@
 module github.com/asama-ai/cgroupv2_exporter
 
-go 1.26
-
-toolchain go1.26.2
+go 1.25.0
 
 require (
 	github.com/VictoriaMetrics/metrics v1.43.2
