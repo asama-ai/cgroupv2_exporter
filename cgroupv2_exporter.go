@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	_ "net/http/pprof"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -78,7 +77,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.logger.Warn("Couldn't create filtered metrics handler", "err", err)
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(fmt.Sprintf("Couldn't create filtered metrics handler: %s", err)))
+		w.Write([]byte("Couldn't create filtered metrics handler"))
 		return
 	}
 	filteredHandler.ServeHTTP(w, r)
@@ -128,6 +127,8 @@ func (h *handler) innerHandler(cgroups []string, filters ...string) (http.Handle
 }
 
 func main() {
+	collector.RegisterCLIFlags()
+
 	var (
 		cgroupGlobs = kingpin.Flag(
 			"cgroup.glob",

@@ -30,21 +30,30 @@ var (
 )
 
 func registerCollector(collector string, isDefaultEnabled bool, factory func(logger *slog.Logger, cgroups []string) (Collector, error)) {
-	var helpDefaultState string
-	if isDefaultEnabled {
-		helpDefaultState = "enabled"
-	} else {
-		helpDefaultState = "disabled"
-	}
-
-	flagName := fmt.Sprintf("collector.%s", collector)
-	flagHelp := fmt.Sprintf("Enable the %s collector (default: %s).", collector, helpDefaultState)
-	defaultValue := fmt.Sprintf("%v", isDefaultEnabled)
-
-	flag := kingpin.Flag(flagName, flagHelp).Default(defaultValue).Action(collectorFlagAction(collector)).Bool()
-	collectorState[collector] = flag
-
+	enabled := isDefaultEnabled
+	collectorState[collector] = &enabled
 	factories[collector] = factory
+}
+
+// RegisterCLIFlags registers kingpin flags for each collector and wires them to
+// collectorState. Call only from the cgroupv2_exporter binary main, before
+// kingpin.Parse, so library importers are not polluted with these flags.
+func RegisterCLIFlags() {
+	for collector, enabled := range collectorState {
+		var helpDefaultState string
+		if *enabled {
+			helpDefaultState = "enabled"
+		} else {
+			helpDefaultState = "disabled"
+		}
+
+		flagName := fmt.Sprintf("collector.%s", collector)
+		flagHelp := fmt.Sprintf("Enable the %s collector (default: %s).", collector, helpDefaultState)
+		defaultValue := fmt.Sprintf("%v", *enabled)
+
+		flag := kingpin.Flag(flagName, flagHelp).Default(defaultValue).Action(collectorFlagAction(collector)).Bool()
+		collectorState[collector] = flag
+	}
 }
 
 type Cgroup2Collector struct {
@@ -88,6 +97,14 @@ func collectorFlagAction(collector string) func(ctx *kingpin.ParseContext) error
 	}
 }
 
+// collectorCacheKey identifies a cached Collector by name and cgroup dirs so
+// instances are reused only for identical directory configurations.
+func collectorCacheKey(name string, cgroups []string) string {
+	dirs := append([]string(nil), cgroups...)
+	sort.Strings(dirs)
+	return name + "\x00" + strings.Join(dirs, "\x00")
+}
+
 func NewCgroupv2Collector(cgroups []string, logger *slog.Logger, filters ...string) (*Cgroup2Collector, error) {
 	f := make(map[string]bool)
 	for _, filter := range filters {
@@ -107,7 +124,8 @@ func NewCgroupv2Collector(cgroups []string, logger *slog.Logger, filters ...stri
 		if !*enabled || (len(f) > 0 && !f[key]) {
 			continue
 		}
-		if collector, ok := initiatedCollectors[key]; ok {
+		cacheKey := collectorCacheKey(key, cgroups)
+		if collector, ok := initiatedCollectors[cacheKey]; ok {
 			collectors[key] = collector
 		} else {
 			collector, err := factories[key](slog.With(logger, "collector", key), cgroups)
@@ -115,7 +133,29 @@ func NewCgroupv2Collector(cgroups []string, logger *slog.Logger, filters ...stri
 				return nil, err
 			}
 			collectors[key] = collector
-			initiatedCollectors[key] = collector
+			initiatedCollectors[cacheKey] = collector
+		}
+	}
+	return &Cgroup2Collector{Collectors: collectors, logger: logger}, nil
+}
+
+// NewCgroupv2CollectorAll instantiates every registered collector factory,
+// ignoring enable/disable state and filters. Intended for host-agent absorb.
+func NewCgroupv2CollectorAll(cgroups []string, logger *slog.Logger) (*Cgroup2Collector, error) {
+	collectors := make(map[string]Collector)
+	initiatedCollectorsMtx.Lock()
+	defer initiatedCollectorsMtx.Unlock()
+	for key, factory := range factories {
+		cacheKey := collectorCacheKey(key, cgroups)
+		if collector, ok := initiatedCollectors[cacheKey]; ok {
+			collectors[key] = collector
+		} else {
+			collector, err := factory(slog.With(logger, "collector", key), cgroups)
+			if err != nil {
+				return nil, err
+			}
+			collectors[key] = collector
+			initiatedCollectors[cacheKey] = collector
 		}
 	}
 	return &Cgroup2Collector{Collectors: collectors, logger: logger}, nil
