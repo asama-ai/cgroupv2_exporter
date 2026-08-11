@@ -97,6 +97,14 @@ func collectorFlagAction(collector string) func(ctx *kingpin.ParseContext) error
 	}
 }
 
+// collectorCacheKey identifies a cached Collector by name and cgroup dirs so
+// instances are reused only for identical directory configurations.
+func collectorCacheKey(name string, cgroups []string) string {
+	dirs := append([]string(nil), cgroups...)
+	sort.Strings(dirs)
+	return name + "\x00" + strings.Join(dirs, "\x00")
+}
+
 func NewCgroupv2Collector(cgroups []string, logger *slog.Logger, filters ...string) (*Cgroup2Collector, error) {
 	f := make(map[string]bool)
 	for _, filter := range filters {
@@ -116,7 +124,8 @@ func NewCgroupv2Collector(cgroups []string, logger *slog.Logger, filters ...stri
 		if !*enabled || (len(f) > 0 && !f[key]) {
 			continue
 		}
-		if collector, ok := initiatedCollectors[key]; ok {
+		cacheKey := collectorCacheKey(key, cgroups)
+		if collector, ok := initiatedCollectors[cacheKey]; ok {
 			collectors[key] = collector
 		} else {
 			collector, err := factories[key](slog.With(logger, "collector", key), cgroups)
@@ -124,7 +133,7 @@ func NewCgroupv2Collector(cgroups []string, logger *slog.Logger, filters ...stri
 				return nil, err
 			}
 			collectors[key] = collector
-			initiatedCollectors[key] = collector
+			initiatedCollectors[cacheKey] = collector
 		}
 	}
 	return &Cgroup2Collector{Collectors: collectors, logger: logger}, nil
@@ -137,7 +146,8 @@ func NewCgroupv2CollectorAll(cgroups []string, logger *slog.Logger) (*Cgroup2Col
 	initiatedCollectorsMtx.Lock()
 	defer initiatedCollectorsMtx.Unlock()
 	for key, factory := range factories {
-		if collector, ok := initiatedCollectors[key]; ok {
+		cacheKey := collectorCacheKey(key, cgroups)
+		if collector, ok := initiatedCollectors[cacheKey]; ok {
 			collectors[key] = collector
 		} else {
 			collector, err := factory(slog.With(logger, "collector", key), cgroups)
@@ -145,7 +155,7 @@ func NewCgroupv2CollectorAll(cgroups []string, logger *slog.Logger) (*Cgroup2Col
 				return nil, err
 			}
 			collectors[key] = collector
-			initiatedCollectors[key] = collector
+			initiatedCollectors[cacheKey] = collector
 		}
 	}
 	return &Cgroup2Collector{Collectors: collectors, logger: logger}, nil
