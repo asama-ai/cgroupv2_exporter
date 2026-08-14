@@ -106,6 +106,7 @@ func (h *handler) innerHandler(cgroups []string, filters ...string) (http.Handle
 		}
 	}
 
+	metrics.ExposeMetadata(true)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if h.scrapeSem != nil {
 			h.scrapeSem <- struct{}{}

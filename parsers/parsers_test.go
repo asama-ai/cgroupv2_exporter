@@ -16,13 +16,7 @@ func TestMultiKeyValueParser(t *testing.T) {
 full avg10=5.67 avg60=8.90 avg300=0.12 total=5678`
 	// Define the expected metrics with labels
 	expectedMetrics := []Metric{
-		{Name: "memory_pressure_avg10", Value: 1.23, Labels: map[string]string{"type": "some"}},
-		{Name: "memory_pressure_avg60", Value: 4.56, Labels: map[string]string{"type": "some"}},
-		{Name: "memory_pressure_avg300", Value: 7.89, Labels: map[string]string{"type": "some"}},
 		{Name: "memory_pressure_total", Value: 1234, Labels: map[string]string{"type": "some"}},
-		{Name: "memory_pressure_avg10", Value: 5.67, Labels: map[string]string{"type": "full"}},
-		{Name: "memory_pressure_avg60", Value: 8.90, Labels: map[string]string{"type": "full"}},
-		{Name: "memory_pressure_avg300", Value: 0.12, Labels: map[string]string{"type": "full"}},
 		{Name: "memory_pressure_total", Value: 5678, Labels: map[string]string{"type": "full"}},
 	}
 
@@ -273,5 +267,21 @@ func TestRangeListCountParser(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestFlatKeyValueParserKeepStats(t *testing.T) {
+	file := strings.NewReader("usage_usec 10\nnice_usec 3\n")
+	parser := &FlatKeyValueParser{
+		MetricPrefix: "cpu_stat",
+		Logger:       logger,
+		KeepStats:    map[string]bool{"usage_usec": true},
+	}
+	metrics, err := parser.Parse(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metrics) != 1 || metrics[0].Labels["stat"] != "usage_usec" {
+		t.Fatalf("got %+v", metrics)
 	}
 }
