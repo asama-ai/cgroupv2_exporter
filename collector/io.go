@@ -18,7 +18,7 @@ func NewIoPressureCollector(logger *slog.Logger, cgroups []string) (Collector, e
 		dirNames:  cgroups,
 		fileName:  file,
 		logger:    fileLogger,
-		isCounter: func(metricName string, _ map[string]string) bool { return isPressureTotalField(metricName) },
+		isCounter: func(metricName string, _ map[string]string) bool { return true },
 	}, nil
 }
 

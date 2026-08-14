@@ -7,6 +7,24 @@ import (
 )
 
 func NewCpuStatCollector(logger *slog.Logger, cgroups []string) (Collector, error) {
+	return newCpuStatCollector(logger, cgroups, cpuStatHealthKeys)
+}
+
+func NewCpuStatDetailCollector(logger *slog.Logger, cgroups []string) (Collector, error) {
+	return newCpuStatCollector(logger, cgroups, cpuStatAnalysisKeys)
+}
+
+var cpuStatHealthKeys = map[string]bool{
+	"usage_usec": true, "user_usec": true, "system_usec": true,
+	"nr_throttled": true, "throttled_usec": true,
+}
+
+var cpuStatAnalysisKeys = map[string]bool{
+	"burst_usec": true, "nr_bursts": true, "nr_periods": true,
+	"nice_usec": true, "core_sched.force_idle_usec": true,
+}
+
+func newCpuStatCollector(logger *slog.Logger, cgroups []string, keep map[string]bool) (Collector, error) {
 	file := "cpu.stat"
 	fileLogger := slog.With(logger, "file", file)
 
@@ -14,6 +32,7 @@ func NewCpuStatCollector(logger *slog.Logger, cgroups []string) (Collector, erro
 		parser: &parsers.FlatKeyValueParser{
 			MetricPrefix: sanitizeP8sName(file),
 			Logger:       fileLogger,
+			KeepStats:    keep,
 		},
 		dirNames: cgroups,
 		fileName: file,
@@ -35,7 +54,7 @@ func NewCpuPressureCollector(logger *slog.Logger, cgroups []string) (Collector, 
 		dirNames:  cgroups,
 		fileName:  file,
 		logger:    fileLogger,
-		isCounter: func(metricName string, _ map[string]string) bool { return isPressureTotalField(metricName) },
+		isCounter: func(metricName string, _ map[string]string) bool { return true },
 	}, nil
 }
 

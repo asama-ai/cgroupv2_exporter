@@ -30,6 +30,8 @@ type SingleValueParser struct {
 type FlatKeyValueParser struct {
 	MetricPrefix string
 	Logger       *slog.Logger
+	// KeepStats, when non-nil, emits only keys present in the map (cpu.stat split).
+	KeepStats map[string]bool
 }
 
 type NestedKeyValueParser struct {
@@ -98,6 +100,9 @@ func (p *FlatKeyValueParser) Parse(file io.Reader) ([]Metric, error) {
 			p.Logger.Error("failed to parse value", "err", err)
 			continue
 		}
+		if p.KeepStats != nil && !p.KeepStats[parts[0]] {
+			continue
+		}
 		// Use parts[0] as a label instead of embedding in metric name
 		metrics = append(metrics, Metric{
 			Name:   p.MetricPrefix,
@@ -127,11 +132,18 @@ func (p *NestedKeyValueParser) Parse(file io.Reader) ([]Metric, error) {
 			continue
 		}
 		prefix := parts[0]
+		isPressure := strings.Contains(p.MetricPrefix, "pressure")
 		for _, m := range parts[1:] {
 			metric := strings.Split(m, "=")
 			if len(metric) != 2 {
 				p.Logger.Error("failed to parse key-value pair", "input", m)
 				continue
+			}
+			if isPressure {
+				switch metric[0] {
+				case "avg10", "avg60", "avg300":
+					continue
+				}
 			}
 			metricName := fmt.Sprintf("%s_%s", p.MetricPrefix, metric[0])
 			value, err := strconv.ParseFloat(metric[1], 64)
@@ -140,9 +152,8 @@ func (p *NestedKeyValueParser) Parse(file io.Reader) ([]Metric, error) {
 				continue
 			}
 			// Use prefix as a label (e.g., device ID like "259:0" or pressure type like "some", "full")
-			// Detect label name: if metric prefix contains "pressure", use "type", otherwise use "device"
 			labelName := "device"
-			if strings.Contains(p.MetricPrefix, "pressure") {
+			if isPressure {
 				labelName = "type"
 			}
 			metrics = append(metrics, Metric{

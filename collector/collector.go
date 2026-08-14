@@ -69,12 +69,6 @@ type Cgroupv2FileCollector struct {
 	isCounter func(metricName string, labels map[string]string) bool
 }
 
-// isPressureTotalField matches cgroup *.pressure cumulative stall time (the total=... field).
-// NestedKeyValueParser uses label "type" for some|full; the field name is the metric suffix (_total).
-func isPressureTotalField(metricName string) bool {
-	return strings.HasSuffix(metricName, "_total")
-}
-
 // DisableDefaultCollectors sets the collector state to false for all collectors which
 // have not been explicitly enabled on the command line.
 func DisableDefaultCollectors() {
@@ -142,10 +136,20 @@ func NewCgroupv2Collector(cgroups []string, logger *slog.Logger, filters ...stri
 // NewCgroupv2CollectorAll instantiates every registered collector factory,
 // ignoring enable/disable state and filters. Intended for host-agent absorb.
 func NewCgroupv2CollectorAll(cgroups []string, logger *slog.Logger) (*Cgroup2Collector, error) {
+	return NewCgroupv2CollectorSelect(cgroups, logger, nil)
+}
+
+// NewCgroupv2CollectorSelect instantiates registered factories for which keep
+// returns true. A nil keep keeps every factory (same as All). Ignores
+// enable/disable flags.
+func NewCgroupv2CollectorSelect(cgroups []string, logger *slog.Logger, keep func(string) bool) (*Cgroup2Collector, error) {
 	collectors := make(map[string]Collector)
 	initiatedCollectorsMtx.Lock()
 	defer initiatedCollectorsMtx.Unlock()
 	for key, factory := range factories {
+		if keep != nil && !keep(key) {
+			continue
+		}
 		cacheKey := collectorCacheKey(key, cgroups)
 		if collector, ok := initiatedCollectors[cacheKey]; ok {
 			collectors[key] = collector
@@ -342,6 +346,7 @@ func init() {
 	registerCollector("cpuset.cpus", defaultEnabled, NewCPUSetCpusCollector)
 	registerCollector("cpuset.cpus.effective", defaultEnabled, NewCPUSetCpusEffectiveCollector)
 	registerCollector("cpu.stat", defaultEnabled, NewCpuStatCollector)
+	registerCollector("cpu.stat.detail", defaultEnabled, NewCpuStatDetailCollector)
 	registerCollector("cpuset.mems", defaultEnabled, NewCPUSetMemsCollector)
 	registerCollector("cpuset.mems.effective", defaultEnabled, NewCPUSetMemsEffectiveCollector)
 	registerCollector("io.pressure", defaultEnabled, NewIoPressureCollector)
