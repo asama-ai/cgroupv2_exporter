@@ -2,6 +2,7 @@ package collector
 
 import (
 	"log/slog"
+	"strings"
 	"testing"
 )
 
@@ -30,5 +31,35 @@ func TestNewCgroupv2CollectorSelectMemoryStat(t *testing.T) {
 	}
 	if _, ok := analysis.Collectors["memory.stat"]; !ok {
 		t.Fatal("analysis must include memory.stat")
+	}
+}
+
+func TestNewCgroupv2CollectorSelectNSRejectsInvalidNamespace(t *testing.T) {
+	keepNone := func(string) bool { return false }
+	for _, ns := range []string{"virt-cgroup", "2virt", "foo bar", "virt/cgroup"} {
+		_, err := NewCgroupv2CollectorSelectNS(nil, slog.Default(), keepNone, SelectOpts{Namespace: ns, Uncached: true})
+		if err == nil {
+			t.Fatalf("namespace %q: want error", ns)
+		}
+		if !strings.Contains(err.Error(), "invalid metric namespace") {
+			t.Fatalf("namespace %q: %v", ns, err)
+		}
+	}
+}
+
+func TestNewCgroupv2CollectorSelectNSAcceptsValidNamespace(t *testing.T) {
+	keepNone := func(string) bool { return false }
+	for _, ns := range []string{"", "cgroupv2", "virt", "container"} {
+		c, err := NewCgroupv2CollectorSelectNS(nil, slog.Default(), keepNone, SelectOpts{Namespace: ns, Uncached: true})
+		if err != nil {
+			t.Fatalf("namespace %q: %v", ns, err)
+		}
+		want := ns
+		if want == "" {
+			want = namespace
+		}
+		if c.namespace != want {
+			t.Fatalf("namespace %q: got %q", ns, c.namespace)
+		}
 	}
 }

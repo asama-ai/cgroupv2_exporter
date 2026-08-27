@@ -164,6 +164,9 @@ func NewCgroupv2CollectorSelectNS(cgroups []string, logger *slog.Logger, keep fu
 	if ns == "" {
 		ns = namespace
 	}
+	if err := metrics.ValidateMetric(ns); err != nil {
+		return nil, fmt.Errorf("invalid metric namespace %q: %w", ns, err)
+	}
 	collectors := make(map[string]Collector)
 	if !opts.Uncached {
 		initiatedCollectorsMtx.Lock()
