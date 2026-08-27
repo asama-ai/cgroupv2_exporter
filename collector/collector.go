@@ -59,6 +59,7 @@ func RegisterCLIFlags() {
 type Cgroup2Collector struct {
 	Collectors map[string]Collector
 	logger     *slog.Logger
+	namespace  string
 }
 
 type Cgroupv2FileCollector struct {
@@ -67,6 +68,7 @@ type Cgroupv2FileCollector struct {
 	fileName  string
 	logger    *slog.Logger
 	isCounter func(metricName string, labels map[string]string) bool
+	namespace string
 }
 
 // DisableDefaultCollectors sets the collector state to false for all collectors which
@@ -91,12 +93,15 @@ func collectorFlagAction(collector string) func(ctx *kingpin.ParseContext) error
 	}
 }
 
-// collectorCacheKey identifies a cached Collector by name and cgroup dirs so
+// collectorCacheKey identifies a cached Collector by namespace, name, and cgroup dirs so
 // instances are reused only for identical directory configurations.
-func collectorCacheKey(name string, cgroups []string) string {
+func collectorCacheKey(ns, name string, cgroups []string) string {
+	if ns == "" {
+		ns = namespace
+	}
 	dirs := append([]string(nil), cgroups...)
 	sort.Strings(dirs)
-	return name + "\x00" + strings.Join(dirs, "\x00")
+	return ns + "\x00" + name + "\x00" + strings.Join(dirs, "\x00")
 }
 
 func NewCgroupv2Collector(cgroups []string, logger *slog.Logger, filters ...string) (*Cgroup2Collector, error) {
@@ -118,7 +123,7 @@ func NewCgroupv2Collector(cgroups []string, logger *slog.Logger, filters ...stri
 		if !*enabled || (len(f) > 0 && !f[key]) {
 			continue
 		}
-		cacheKey := collectorCacheKey(key, cgroups)
+		cacheKey := collectorCacheKey("", key, cgroups)
 		if collector, ok := initiatedCollectors[cacheKey]; ok {
 			collectors[key] = collector
 		} else {
@@ -126,11 +131,12 @@ func NewCgroupv2Collector(cgroups []string, logger *slog.Logger, filters ...stri
 			if err != nil {
 				return nil, err
 			}
+			setCollectorNamespace(collector, namespace)
 			collectors[key] = collector
 			initiatedCollectors[cacheKey] = collector
 		}
 	}
-	return &Cgroup2Collector{Collectors: collectors, logger: logger}, nil
+	return &Cgroup2Collector{Collectors: collectors, logger: logger, namespace: namespace}, nil
 }
 
 // NewCgroupv2CollectorAll instantiates every registered collector factory,
@@ -139,30 +145,66 @@ func NewCgroupv2CollectorAll(cgroups []string, logger *slog.Logger) (*Cgroup2Col
 	return NewCgroupv2CollectorSelect(cgroups, logger, nil)
 }
 
+// SelectOpts configures NewCgroupv2CollectorSelectNS.
+type SelectOpts struct {
+	Namespace string // default cgroupv2
+	Uncached  bool   // skip initiatedCollectors (watch-set dirs change)
+}
+
 // NewCgroupv2CollectorSelect instantiates registered factories for which keep
 // returns true. A nil keep keeps every factory (same as All). Ignores
 // enable/disable flags.
 func NewCgroupv2CollectorSelect(cgroups []string, logger *slog.Logger, keep func(string) bool) (*Cgroup2Collector, error) {
+	return NewCgroupv2CollectorSelectNS(cgroups, logger, keep, SelectOpts{})
+}
+
+// NewCgroupv2CollectorSelectNS is Select with a metric namespace and optional uncached construction.
+func NewCgroupv2CollectorSelectNS(cgroups []string, logger *slog.Logger, keep func(string) bool, opts SelectOpts) (*Cgroup2Collector, error) {
+	ns := opts.Namespace
+	if ns == "" {
+		ns = namespace
+	}
+	if err := metrics.ValidateMetric(ns); err != nil {
+		return nil, fmt.Errorf("invalid metric namespace %q: %w", ns, err)
+	}
 	collectors := make(map[string]Collector)
-	initiatedCollectorsMtx.Lock()
-	defer initiatedCollectorsMtx.Unlock()
+	if !opts.Uncached {
+		initiatedCollectorsMtx.Lock()
+		defer initiatedCollectorsMtx.Unlock()
+	}
 	for key, factory := range factories {
 		if keep != nil && !keep(key) {
 			continue
 		}
-		cacheKey := collectorCacheKey(key, cgroups)
-		if collector, ok := initiatedCollectors[cacheKey]; ok {
-			collectors[key] = collector
-		} else {
+		if !opts.Uncached {
+			cacheKey := collectorCacheKey(ns, key, cgroups)
+			if collector, ok := initiatedCollectors[cacheKey]; ok {
+				collectors[key] = collector
+				continue
+			}
 			collector, err := factory(slog.With(logger, "collector", key), cgroups)
 			if err != nil {
 				return nil, err
 			}
+			setCollectorNamespace(collector, ns)
 			collectors[key] = collector
 			initiatedCollectors[cacheKey] = collector
+			continue
 		}
+		collector, err := factory(slog.With(logger, "collector", key), cgroups)
+		if err != nil {
+			return nil, err
+		}
+		setCollectorNamespace(collector, ns)
+		collectors[key] = collector
 	}
-	return &Cgroup2Collector{Collectors: collectors, logger: logger}, nil
+	return &Cgroup2Collector{Collectors: collectors, logger: logger, namespace: ns}, nil
+}
+
+func setCollectorNamespace(c Collector, ns string) {
+	if fc, ok := c.(*Cgroupv2FileCollector); ok {
+		fc.namespace = ns
+	}
 }
 
 // Scrape runs all collectors and writes series into metricSet (typically a fresh Set per HTTP request).
@@ -172,7 +214,7 @@ func (cgc *Cgroup2Collector) Scrape(metricSet *metrics.Set) {
 	for name, c := range cgc.Collectors {
 		go func(name string, c Collector) {
 			defer wg.Done()
-			execute(metricSet, name, c, cgc.logger)
+			execute(metricSet, name, c, cgc.logger, cgc.namespace)
 		}(name, c)
 	}
 	wg.Wait()
@@ -198,7 +240,18 @@ func sanitizeP8sName(name string) string {
 }
 
 func joinFQ(metricName string) string {
-	return namespace + "_" + metricName
+	return joinFQNS(namespace, metricName)
+}
+
+func joinFQNS(ns, metricName string) string {
+	if ns == "" {
+		ns = namespace
+	}
+	return ns + "_" + metricName
+}
+
+func (cc *Cgroupv2FileCollector) fq(metricName string) string {
+	return joinFQNS(cc.namespace, metricName)
 }
 
 // escapeLabelValue formats s as a Prometheus label value (quoted, escaped).
@@ -257,7 +310,7 @@ func BuildInfoMetric(version, revision, branch, goversion string) string {
 	})
 }
 
-func execute(metricSet *metrics.Set, name string, c Collector, logger *slog.Logger) {
+func execute(metricSet *metrics.Set, name string, c Collector, logger *slog.Logger, ns string) {
 	begin := time.Now()
 	err := c.Update(metricSet)
 	duration := time.Since(begin)
@@ -274,9 +327,9 @@ func execute(metricSet *metrics.Set, name string, c Collector, logger *slog.Logg
 		logger.Debug("collector succeeded", "name", name, "duration_seconds", duration.Seconds())
 		success = 1
 	}
-	durID := formatMetricID(joinFQ("scrape_collector_duration_seconds"), map[string]string{"collector": name})
+	durID := formatMetricID(joinFQNS(ns, "scrape_collector_duration_seconds"), map[string]string{"collector": name})
 	metricSet.GetOrCreateGauge(durID, nil).Set(duration.Seconds())
-	okID := formatMetricID(joinFQ("scrape_collector_success"), map[string]string{"collector": name})
+	okID := formatMetricID(joinFQNS(ns, "scrape_collector_success"), map[string]string{"collector": name})
 	metricSet.GetOrCreateGauge(okID, nil).Set(success)
 }
 
@@ -310,7 +363,7 @@ func (cc *Cgroupv2FileCollector) Update(metricSet *metrics.Set) error {
 					labels[labelName] = labelValue
 				}
 
-				id := formatMetricID(joinFQ(metricName), labels)
+				id := formatMetricID(cc.fq(metricName), labels)
 				if cc.isCounter(metricName, metric.Labels) {
 					metricSet.GetOrCreateFloatCounter(id).Set(metric.Value)
 				} else {
