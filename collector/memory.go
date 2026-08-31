@@ -95,6 +95,40 @@ func NewMemoryHighCollector(logger *slog.Logger, cgroups []string) (Collector, e
 	}, nil
 }
 
+func NewMemoryMaxCollector(logger *slog.Logger, cgroups []string) (Collector, error) {
+	file := "memory.max"
+	fileLogger := slog.With(logger, "file", file)
+
+	return &Cgroupv2FileCollector{
+		parser: &parsers.SingleValueParser{
+			MetricPrefix: sanitizeP8sName(file),
+			Logger:       fileLogger,
+			SkipMax:      true,
+		},
+		dirNames:  cgroups,
+		fileName:  file,
+		logger:    fileLogger,
+		isCounter: func(metricName string, labels map[string]string) bool { return false },
+	}, nil
+}
+
+func NewMemoryEventsCollector(logger *slog.Logger, cgroups []string) (Collector, error) {
+	file := "memory.events"
+	fileLogger := slog.With(logger, "file", file)
+
+	return &Cgroupv2FileCollector{
+		parser: &parsers.FlatKeyValueParser{
+			MetricPrefix: sanitizeP8sName(file),
+			Logger:       fileLogger,
+			LabelName:    "event",
+		},
+		dirNames:  cgroups,
+		fileName:  file,
+		logger:    fileLogger,
+		isCounter: func(metricName string, labels map[string]string) bool { return true },
+	}, nil
+}
+
 func NewMemoryStatCollector(logger *slog.Logger, cgroups []string) (Collector, error) {
 	file := "memory.stat"
 	fileLogger := slog.With(logger, "file", file)

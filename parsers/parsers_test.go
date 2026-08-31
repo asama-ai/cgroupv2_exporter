@@ -86,6 +86,25 @@ func TestSingleValueParser(t *testing.T) {
 	}
 }
 
+func TestSingleValueParserSkipMax(t *testing.T) {
+	parser := &SingleValueParser{
+		MetricPrefix: "memory_max",
+		Logger:       logger,
+		SkipMax:      true,
+	}
+	metrics, err := parser.Parse(strings.NewReader("max"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(metrics) != 0 {
+		t.Fatalf("unlimited max must omit series, got %+v", metrics)
+	}
+	metrics, err = parser.Parse(strings.NewReader("1048576"))
+	if err != nil || len(metrics) != 1 || metrics[0].Value != 1048576 {
+		t.Fatalf("bounded max: %+v err=%v", metrics, err)
+	}
+}
+
 func TestMaxValue(t *testing.T) {
 	fileContent := `max`
 	file := strings.NewReader(fileContent)
@@ -129,16 +148,15 @@ func TestKeyValueParser(t *testing.T) {
 	parser := &FlatKeyValueParser{
 		MetricPrefix: "memory_events",
 		Logger:       logger,
+		LabelName:    "event",
 	}
-	// Define the expected metrics with labels
 	expectedMetrics := []Metric{
-		{Name: "memory_events", Value: 0, Labels: map[string]string{"stat": "low"}},
-		{Name: "memory_events", Value: 5335362, Labels: map[string]string{"stat": "high"}},
-		{Name: "memory_events", Value: 0, Labels: map[string]string{"stat": "max"}},
-		{Name: "memory_events", Value: 0, Labels: map[string]string{"stat": "oom"}},
-		{Name: "memory_events", Value: 0, Labels: map[string]string{"stat": "oom_kill"}},
+		{Name: "memory_events", Value: 0, Labels: map[string]string{"event": "low"}},
+		{Name: "memory_events", Value: 5335362, Labels: map[string]string{"event": "high"}},
+		{Name: "memory_events", Value: 0, Labels: map[string]string{"event": "max"}},
+		{Name: "memory_events", Value: 0, Labels: map[string]string{"event": "oom"}},
+		{Name: "memory_events", Value: 0, Labels: map[string]string{"event": "oom_kill"}},
 	}
-
 	metrics, err := parser.Parse(file)
 	if err != nil {
 		t.Fatalf("Error calling Metrics: %v", err)
@@ -148,27 +166,21 @@ func TestKeyValueParser(t *testing.T) {
 		t.Fatalf("Expected %d metrics, got %d", len(expectedMetrics), len(metrics))
 	}
 
-	// Build a map for easier comparison using metric name and stat label
 	actualMap := make(map[string]Metric)
 	for _, m := range metrics {
-		key := fmt.Sprintf("%s|%s", m.Name, m.Labels["stat"])
+		key := fmt.Sprintf("%s|%s", m.Name, m.Labels["event"])
 		actualMap[key] = m
 	}
 
 	for _, expected := range expectedMetrics {
-		key := fmt.Sprintf("%s|%s", expected.Name, expected.Labels["stat"])
+		key := fmt.Sprintf("%s|%s", expected.Name, expected.Labels["event"])
 		actual, ok := actualMap[key]
 		if !ok {
-			t.Errorf("Metric %s with stat=%s not found", expected.Name, expected.Labels["stat"])
+			t.Errorf("Metric %s with event=%s not found", expected.Name, expected.Labels["event"])
 			continue
 		}
-
 		if actual.Value != expected.Value {
-			t.Errorf("Metric %s with stat=%s has unexpected value. Expected: %f, Actual: %f", expected.Name, expected.Labels["stat"], expected.Value, actual.Value)
-		}
-
-		if actual.Labels["stat"] != expected.Labels["stat"] {
-			t.Errorf("Metric %s has unexpected stat label. Expected: %s, Actual: %s", expected.Name, expected.Labels["stat"], actual.Labels["stat"])
+			t.Errorf("unexpected value for event=%s: %f", expected.Labels["event"], actual.Value)
 		}
 	}
 }
