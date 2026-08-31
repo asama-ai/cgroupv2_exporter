@@ -19,6 +19,12 @@ func TestNewCgroupv2CollectorSelectMemoryStat(t *testing.T) {
 	if _, ok := health.Collectors["memory.current"]; !ok {
 		t.Fatal("health must include memory.current")
 	}
+	if _, ok := health.Collectors["memory.max"]; !ok {
+		t.Fatal("health must include memory.max")
+	}
+	if _, ok := health.Collectors["memory.events"]; !ok {
+		t.Fatal("health must include memory.events")
+	}
 
 	analysis, err := NewCgroupv2CollectorSelect(nil, slog.Default(), func(name string) bool {
 		return name == "memory.stat"

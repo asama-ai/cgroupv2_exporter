@@ -25,6 +25,8 @@ type Metric struct {
 type SingleValueParser struct {
 	MetricPrefix string
 	Logger       *slog.Logger
+	// SkipMax omits the series when the file content is "max" (unlimited).
+	SkipMax bool
 }
 
 type FlatKeyValueParser struct {
@@ -32,6 +34,8 @@ type FlatKeyValueParser struct {
 	Logger       *slog.Logger
 	// KeepStats, when non-nil, emits only keys present in the map (cpu.stat split).
 	KeepStats map[string]bool
+	// LabelName is the key-column label (default "stat"). memory.events uses "event".
+	LabelName string
 }
 
 type NestedKeyValueParser struct {
@@ -61,9 +65,12 @@ func (p *SingleValueParser) Parse(file io.Reader) ([]Metric, error) {
 		p.Logger.Error("error reading file", "err", err)
 		return nil, err
 	}
-	// Check if content is "max" and convert it to +Inf
+	// Check if content is "max" and convert it to +Inf (unless SkipMax).
 	var value float64
 	if content == "max" {
+		if p.SkipMax {
+			return nil, nil
+		}
 		p.Logger.Debug("converting max to +Inf")
 		value = math.Inf(1)
 	} else {
@@ -103,11 +110,15 @@ func (p *FlatKeyValueParser) Parse(file io.Reader) ([]Metric, error) {
 		if p.KeepStats != nil && !p.KeepStats[parts[0]] {
 			continue
 		}
+		label := p.LabelName
+		if label == "" {
+			label = "stat"
+		}
 		// Use parts[0] as a label instead of embedding in metric name
 		metrics = append(metrics, Metric{
 			Name:   p.MetricPrefix,
 			Value:  value,
-			Labels: map[string]string{"stat": parts[0]},
+			Labels: map[string]string{label: parts[0]},
 		})
 	}
 
