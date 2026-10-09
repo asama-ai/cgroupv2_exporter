@@ -55,7 +55,16 @@ func (b *Batch) add(name string, labels map[string]string, value float64, gauge 
 	if b.fams == nil {
 		b.fams = map[string]*dto.MetricFamily{}
 	}
+	pairs := labelPairs(labels)
 	mf := b.fams[name]
+	if mf != nil {
+		for _, existing := range mf.Metric {
+			if sameLabels(existing.GetLabel(), pairs) {
+				setSample(existing, value, gauge)
+				return
+			}
+		}
+	}
 	if mf == nil {
 		n := name
 		typ := dto.MetricType_COUNTER
@@ -66,14 +75,32 @@ func (b *Batch) add(name string, labels map[string]string, value float64, gauge 
 		b.fams[name] = mf
 		b.order = append(b.order, name)
 	}
-	v := value
-	m := &dto.Metric{Label: labelPairs(labels)}
-	if gauge {
-		m.Gauge = &dto.Gauge{Value: &v}
-	} else {
-		m.Counter = &dto.Counter{Value: &v}
-	}
+	m := &dto.Metric{Label: pairs}
+	setSample(m, value, gauge)
 	mf.Metric = append(mf.Metric, m)
+}
+
+func setSample(m *dto.Metric, value float64, gauge bool) {
+	v := value
+	if gauge {
+		m.Counter = nil
+		m.Gauge = &dto.Gauge{Value: &v}
+		return
+	}
+	m.Gauge = nil
+	m.Counter = &dto.Counter{Value: &v}
+}
+
+func sameLabels(a, b []*dto.LabelPair) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].GetName() != b[i].GetName() || a[i].GetValue() != b[i].GetValue() {
+			return false
+		}
+	}
+	return true
 }
 
 func labelPairs(labels map[string]string) []*dto.LabelPair {
