@@ -5,14 +5,54 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/VictoriaMetrics/metrics"
 	"github.com/asama-ai/cgroupv2_exporter/collector"
+	dto "github.com/prometheus/client_model/go"
+	"github.com/prometheus/common/expfmt"
 )
 
 // HandlerOpts controls metric namespace and collector caching.
 type HandlerOpts struct {
 	Namespace string // default cgroupv2
 	Uncached  bool   // skip collector cache (watch-set dirs change)
+}
+
+// Gather returns families for every registered collector.
+func Gather(cgroupDirs []string, logger *slog.Logger) ([]*dto.MetricFamily, error) {
+	return gather(cgroupDirs, logger, nil, HandlerOpts{})
+}
+
+// GatherExcept returns families for every registered collector except the named ones.
+func GatherExcept(cgroupDirs []string, logger *slog.Logger, exclude ...string) ([]*dto.MetricFamily, error) {
+	return GatherExceptOpts(cgroupDirs, logger, HandlerOpts{}, exclude...)
+}
+
+// GatherExceptOpts is GatherExcept with namespace / uncached options.
+func GatherExceptOpts(cgroupDirs []string, logger *slog.Logger, opts HandlerOpts, exclude ...string) ([]*dto.MetricFamily, error) {
+	skip := make(map[string]struct{}, len(exclude))
+	for _, e := range exclude {
+		skip[e] = struct{}{}
+	}
+	return gather(cgroupDirs, logger, func(name string) bool {
+		_, ok := skip[name]
+		return !ok
+	}, opts)
+}
+
+// GatherOnly returns families for the named collectors.
+func GatherOnly(cgroupDirs []string, logger *slog.Logger, names ...string) ([]*dto.MetricFamily, error) {
+	return GatherOnlyOpts(cgroupDirs, logger, HandlerOpts{}, names...)
+}
+
+// GatherOnlyOpts is GatherOnly with namespace / uncached options.
+func GatherOnlyOpts(cgroupDirs []string, logger *slog.Logger, opts HandlerOpts, names ...string) ([]*dto.MetricFamily, error) {
+	want := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		want[n] = struct{}{}
+	}
+	return gather(cgroupDirs, logger, func(name string) bool {
+		_, ok := want[name]
+		return ok
+	}, opts)
 }
 
 // NewHandler returns an http.Handler that scrapes cgroupv2_* for the given dirs.
@@ -54,21 +94,45 @@ func NewHandlerOnlyOpts(cgroupDirs []string, logger *slog.Logger, opts HandlerOp
 	}, opts)
 }
 
-func newHandler(cgroupDirs []string, logger *slog.Logger, keep func(string) bool, opts HandlerOpts) (http.Handler, error) {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	cgc, err := collector.NewCgroupv2CollectorSelectNS(cgroupDirs, logger, keep, collector.SelectOpts{
-		Namespace: opts.Namespace,
-		Uncached:  opts.Uncached,
-	})
+func gather(cgroupDirs []string, logger *slog.Logger, keep func(string) bool, opts HandlerOpts) ([]*dto.MetricFamily, error) {
+	cgc, err := newCollector(cgroupDirs, logger, keep, opts)
 	if err != nil {
 		return nil, err
 	}
-	metrics.ExposeMetadata(true)
+	return cgc.Gather()
+}
+
+func newHandler(cgroupDirs []string, logger *slog.Logger, keep func(string) bool, opts HandlerOpts) (http.Handler, error) {
+	cgc, err := newCollector(cgroupDirs, logger, keep, opts)
+	if err != nil {
+		return nil, err
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ms := metrics.NewSet()
-		cgc.Scrape(ms)
-		ms.WritePrometheus(w)
+		mfs, err := cgc.Gather()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeFamilies(w, mfs)
 	}), nil
+}
+
+func newCollector(cgroupDirs []string, logger *slog.Logger, keep func(string) bool, opts HandlerOpts) (*collector.Cgroup2Collector, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return collector.NewCgroupv2CollectorSelectNS(cgroupDirs, logger, keep, collector.SelectOpts{
+		Namespace: opts.Namespace,
+		Uncached:  opts.Uncached,
+	})
+}
+
+func writeFamilies(w http.ResponseWriter, mfs []*dto.MetricFamily) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	for _, mf := range mfs {
+		if mf == nil {
+			continue
+		}
+		_, _ = expfmt.MetricFamilyToText(w, mf)
+	}
 }

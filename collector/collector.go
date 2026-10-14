@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/VictoriaMetrics/metrics"
 	"github.com/alecthomas/kingpin/v2"
 	"github.com/asama-ai/cgroupv2_exporter/parsers"
+	dto "github.com/prometheus/client_model/go"
 )
 
 // Namespace defines the common namespace to be used by all metrics.
@@ -164,8 +164,8 @@ func NewCgroupv2CollectorSelectNS(cgroups []string, logger *slog.Logger, keep fu
 	if ns == "" {
 		ns = namespace
 	}
-	if err := metrics.ValidateMetric(ns); err != nil {
-		return nil, fmt.Errorf("invalid metric namespace %q: %w", ns, err)
+	if !validMetricNamespace(ns) {
+		return nil, fmt.Errorf("invalid metric namespace %q", ns)
 	}
 	collectors := make(map[string]Collector)
 	if !opts.Uncached {
@@ -207,17 +207,35 @@ func setCollectorNamespace(c Collector, ns string) {
 	}
 }
 
-// Scrape runs all collectors and writes series into metricSet (typically a fresh Set per HTTP request).
-func (cgc *Cgroup2Collector) Scrape(metricSet *metrics.Set) {
+// Gather runs every collector and returns the family batch.
+func (cgc *Cgroup2Collector) Gather() ([]*dto.MetricFamily, error) {
+	if cgc == nil {
+		return nil, nil
+	}
+	return cgc.GatherInto(&Batch{})
+}
+
+// GatherInto runs every collector into b and returns its families.
+func (cgc *Cgroup2Collector) GatherInto(b *Batch) ([]*dto.MetricFamily, error) {
+	if cgc == nil {
+		if b == nil {
+			return nil, nil
+		}
+		return b.Families(), nil
+	}
+	if b == nil {
+		b = &Batch{}
+	}
 	wg := sync.WaitGroup{}
 	wg.Add(len(cgc.Collectors))
 	for name, c := range cgc.Collectors {
 		go func(name string, c Collector) {
 			defer wg.Done()
-			execute(metricSet, name, c, cgc.logger, cgc.namespace)
+			execute(b, name, c, cgc.logger, cgc.namespace)
 		}(name, c)
 	}
 	wg.Wait()
+	return b.Families(), nil
 }
 
 func sanitizeP8sName(name string) string {
@@ -239,6 +257,22 @@ func sanitizeP8sName(name string) string {
 	return name
 }
 
+func validMetricNamespace(ns string) bool {
+	if ns == "" {
+		return false
+	}
+	for i, r := range ns {
+		switch {
+		case r == '_' || r == ':':
+		case r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z':
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func joinFQ(metricName string) string {
 	return joinFQNS(namespace, metricName)
 }
@@ -254,65 +288,24 @@ func (cc *Cgroupv2FileCollector) fq(metricName string) string {
 	return joinFQNS(cc.namespace, metricName)
 }
 
-// escapeLabelValue formats s as a Prometheus label value (quoted, escaped).
-func escapeLabelValue(s string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for _, r := range s {
-		switch r {
-		case '\\':
-			b.WriteString(`\\`)
-		case '"':
-			b.WriteString(`\"`)
-		case '\n':
-			b.WriteString(`\n`)
-		case '\r':
-			b.WriteString(`\r`)
-		default:
-			b.WriteRune(r)
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
+// BuildInfoName is the standalone exporter build-info metric.
+func BuildInfoName() string {
+	return joinFQ("exporter_build_info")
 }
 
-func formatMetricID(fqMetricName string, labels map[string]string) string {
-	if len(labels) == 0 {
-		return fqMetricName
-	}
-	keys := make([]string, 0, len(labels))
-	for k := range labels {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var b strings.Builder
-	b.WriteString(fqMetricName)
-	b.WriteByte('{')
-	for i, k := range keys {
-		if i > 0 {
-			b.WriteByte(',')
-		}
-		b.WriteString(k)
-		b.WriteByte('=')
-		b.WriteString(escapeLabelValue(labels[k]))
-	}
-	b.WriteByte('}')
-	return b.String()
-}
-
-// BuildInfoMetric returns the metric id for cgroupv2_exporter_build_info with the given labels.
-func BuildInfoMetric(version, revision, branch, goversion string) string {
-	return formatMetricID(joinFQ("exporter_build_info"), map[string]string{
+// BuildInfoLabels returns labels for the standalone exporter build-info metric.
+func BuildInfoLabels(version, revision, branch, goversion string) map[string]string {
+	return map[string]string{
 		"version":   version,
 		"revision":  revision,
 		"branch":    branch,
 		"goversion": goversion,
-	})
+	}
 }
 
-func execute(metricSet *metrics.Set, name string, c Collector, logger *slog.Logger, ns string) {
+func execute(batch *Batch, name string, c Collector, logger *slog.Logger, ns string) {
 	begin := time.Now()
-	err := c.Update(metricSet)
+	err := c.Update(batch)
 	duration := time.Since(begin)
 	var success float64
 
@@ -327,13 +320,12 @@ func execute(metricSet *metrics.Set, name string, c Collector, logger *slog.Logg
 		logger.Debug("collector succeeded", "name", name, "duration_seconds", duration.Seconds())
 		success = 1
 	}
-	durID := formatMetricID(joinFQNS(ns, "scrape_collector_duration_seconds"), map[string]string{"collector": name})
-	metricSet.GetOrCreateGauge(durID, nil).Set(duration.Seconds())
-	okID := formatMetricID(joinFQNS(ns, "scrape_collector_success"), map[string]string{"collector": name})
-	metricSet.GetOrCreateGauge(okID, nil).Set(success)
+	labels := map[string]string{"collector": name}
+	batch.Gauge(joinFQNS(ns, "scrape_collector_duration_seconds"), labels, duration.Seconds())
+	batch.Gauge(joinFQNS(ns, "scrape_collector_success"), labels, success)
 }
 
-func (cc *Cgroupv2FileCollector) Update(metricSet *metrics.Set) error {
+func (cc *Cgroupv2FileCollector) Update(batch *Batch) error {
 	for _, dirName := range cc.dirNames {
 		filePath := filepath.Join(dirName, cc.fileName)
 		file, err := os.Open(filePath)
@@ -363,11 +355,10 @@ func (cc *Cgroupv2FileCollector) Update(metricSet *metrics.Set) error {
 					labels[labelName] = labelValue
 				}
 
-				id := formatMetricID(cc.fq(metricName), labels)
 				if cc.isCounter(metricName, metric.Labels) {
-					metricSet.GetOrCreateFloatCounter(id).Set(metric.Value)
+					batch.Counter(cc.fq(metricName), labels, metric.Value)
 				} else {
-					metricSet.GetOrCreateGauge(id, nil).Set(metric.Value)
+					batch.Gauge(cc.fq(metricName), labels, metric.Value)
 				}
 				cc.logger.Debug("collected metric", "name", metricName, "value", metric.Value, "labels", metric.Labels, "cgroup", cgroupName)
 			}
@@ -379,7 +370,7 @@ func (cc *Cgroupv2FileCollector) Update(metricSet *metrics.Set) error {
 
 // Collector is the interface a collector has to implement.
 type Collector interface {
-	Update(metricSet *metrics.Set) error
+	Update(batch *Batch) error
 }
 
 // ErrNoData indicates the collector found no data to collect, but had no other error.

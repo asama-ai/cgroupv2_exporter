@@ -29,6 +29,7 @@ import (
 	"github.com/VictoriaMetrics/metrics"
 	"github.com/alecthomas/kingpin/v2"
 	"github.com/asama-ai/cgroupv2_exporter/collector"
+	"github.com/prometheus/common/expfmt"
 	"github.com/prometheus/common/promslog"
 	"github.com/prometheus/common/promslog/flag"
 	"github.com/prometheus/common/version"
@@ -113,14 +114,22 @@ func (h *handler) innerHandler(cgroups []string, filters ...string) (http.Handle
 			defer func() { <-h.scrapeSem }()
 		}
 
-		ms := metrics.NewSet()
-		ms.GetOrCreateGauge(collector.BuildInfoMetric(
+		b := &collector.Batch{}
+		b.Gauge(collector.BuildInfoName(), collector.BuildInfoLabels(
 			version.Version, version.Revision, version.Branch, version.GoVersion,
-		), nil).Set(1)
-
-		cgc.Scrape(ms)
-
-		ms.WritePrometheus(w)
+		), 1)
+		mfs, err := cgc.GatherInto(b)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		for _, mf := range mfs {
+			if mf == nil {
+				continue
+			}
+			_, _ = expfmt.MetricFamilyToText(w, mf)
+		}
 		if h.includeExporter {
 			metrics.WriteProcessMetrics(w)
 		}
